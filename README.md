@@ -1,8 +1,8 @@
 # Home Cortex for Apple
 
-`home-cortex-apple` is an independent native Swift/SwiftUI iPhone and iPad client. Its project and main shared scheme are named `home-cortex-apple`; the installed app is **Home Cortex**. It uses Client Interface V1 only.
+`home-cortex-apple` is an independent native Swift/SwiftUI iPhone and iPad client. Its project and main shared scheme are named `home-cortex-apple`; the installed app is **Home Cortex**. It uses Client Interface V1 for provisioning/session control and the canonical Home Cortex conversation API over the same mTLS identity.
 
-The app discovers a trusted server, enrolls from an operator invitation, retains a device-held key in Keychain, authenticates with mTLS, and registers/renews a software-only session. **Connected** requires an authenticated, ACTIVE session with a valid lease. There is no embodiment, physical capability, chat, camera, microphone, telemetry, or legacy authentication fallback.
+The app discovers a trusted server, enrolls from an operator invitation, retains a device-held key in Keychain, authenticates with mTLS, and registers/renews a software-only session. **Connected** requires an authenticated, ACTIVE session with a valid lease. The provisioned app opens a native 老管家 conversation screen. There is no embodiment, physical capability, camera, microphone, telemetry, or legacy authentication fallback.
 
 ## Build and run
 
@@ -146,3 +146,26 @@ Actual results/blockers are recorded in [.llm/epic3b-v1-connection.md](.llm/epic
 Apple references: [device deployment](https://developer.apple.com/documentation/Xcode/running-your-app-on-simulated-or-physical-devices), [server trust evaluation](https://developer.apple.com/documentation/foundation/performing-manual-server-trust-authentication), [custom trust anchors](https://developer.apple.com/documentation/security/configuring-a-trust), and [certificate/key identities](https://developer.apple.com/documentation/security/secidentitycreate(_:_:_:)).
 
 The next milestone is 老管家 conversation/chat after real physical V1 acceptance.
+
+## 老管家 conversation
+
+Once provisioned, the app opens native chat. The status beside 老管家 reflects the
+actual ACTIVE V1 session. Connection settings remain available through the gear
+button. Sending is enabled only while connected and after server history loads.
+Enter Chinese or English text in the multiline composer; the original text goes
+to the canonical backend unchanged. Replies stream from real SSE events. Stop
+closes the existing response stream; the backend may preserve a partial reply.
+
+The operator must explicitly map this software client's ID to a household person
+using `CORTEX_CALLER_IDENTITY_MAP` on the server. A valid certificate alone does
+not grant conversation authority. Chat uses the existing steward runtime whose
+entity is `agent:butler`, and never selects an active embodiment.
+
+Only the selected conversation ID is saved locally, scoped by server and client
+ID. Transcripts come from Home Cortex on launch/reconnect. V1 session replacement
+does not change the selected conversation. After a timeout/interruption, use
+**Reload history** before deciding whether to send again. The backend has no send
+idempotency key, so uncertain submissions are never retried automatically.
+An unsent local failure may expose **Retry**; it has not reached the backend.
+
+Development and physical acceptance evidence: [.llm/epic3b-chat.md](.llm/epic3b-chat.md).

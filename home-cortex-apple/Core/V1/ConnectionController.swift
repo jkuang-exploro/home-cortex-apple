@@ -75,6 +75,14 @@ final class ConnectionController {
     var canProvision: Bool { credential == nil && configuration != nil && trustedCAAvailable && !busy }
     var busy: Bool { [.provisioning, .discovering, .authenticating, .registering].contains(state) }
 
+    func conversationAccess() throws -> ConversationAccess {
+        guard displayedState == .connected, let credential, let session else { throw ChatFailure.notConnected }
+        return ConversationAccess(clientID: credential.clientID, sessionID: session.sessionID,
+            origin: credential.configuration.serverEndpoint,
+            transport: try URLSessionConversationTransport(configuration: credential.configuration,
+                caPEM: credential.trustedCAPEM, identity: store.identity(for: credential)))
+    }
+
     private func reload() {
         do {
             credential = try store.load()

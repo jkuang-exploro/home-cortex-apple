@@ -76,7 +76,7 @@ final class URLSessionV1Transport: V1Transport, @unchecked Sendable {
     }
 }
 
-private final class TLSDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+final class TLSDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     private let origin: URL
     private let hostname: String
     private let anchors: [SecCertificate]
