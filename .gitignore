@@ -21,3 +21,5 @@ xcuserdata/
 *.key
 Config/Signing.local.xcconfig
 .local/
+__pycache__/
+home-cortex-appleTests/Fixtures/live-ca.txt

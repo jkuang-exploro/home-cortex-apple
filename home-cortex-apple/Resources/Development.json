@@ -1,0 +1,6 @@
+{
+  "server_endpoint": "https://home-cortex-0:8443",
+  "bootstrap_endpoint": "https://home-cortex-0:8444",
+  "server_hostname": "home-cortex-0",
+  "protocol_version": "1.0"
+}

@@ -1,0 +1,7 @@
+{
+  "code": "TEMPORARILY_UNAVAILABLE",
+  "detail_code": "buffer_too_short",
+  "message": "Recent clip buffer is not ready.",
+  "retryable": true,
+  "retry_after_ms": null
+}

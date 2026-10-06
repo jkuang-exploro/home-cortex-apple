@@ -1,0 +1,6 @@
+{
+  "protocol_versions": ["1.0"],
+  "envelope_schema_versions": [1],
+  "promotion_max_age_ms": 21600000,
+  "max_media_bytes": 33554432
+}
