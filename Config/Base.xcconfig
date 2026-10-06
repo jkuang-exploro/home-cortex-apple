@@ -1,0 +1,11 @@
+IPHONEOS_DEPLOYMENT_TARGET = 17.0
+TARGETED_DEVICE_FAMILY = 1,2
+SWIFT_VERSION = 6.0
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM =
+HOME_CORTEX_BUNDLE_IDENTIFIER = com.jiankuang.homecortex
+
+// Optional machine-local signing settings. Never commit the real file.
+#include? "Signing.local.xcconfig"

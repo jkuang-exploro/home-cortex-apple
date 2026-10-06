@@ -1,1 +1,0 @@
-# Apple App for home-cortex
