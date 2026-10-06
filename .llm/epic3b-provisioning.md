@@ -69,3 +69,8 @@ Network investigation after the phone reported unreachable: production services 
 Current blocker: physical force-quit/relaunch acceptance; the phone subsequently locked during 3B.2 real chat validation.
 
 APPLE V1 PROVISIONING: BLOCKED
+
+
+## LAN sign-in update (2026-10-05)
+
+The earlier Tailscale/DNS recommendation is superseded by the fixed LAN deployment: `192.168.68.59`. The original CA now signs a server leaf with both the old DNS SAN and the LAN IP SAN. Normal native sign-in bundles that public CA and uses the same web email/API key to request a restricted software invitation automatically, then generates its own Secure Enclave key/CSR and receives its certificate. No manual CA/invitation transfer, system CA installation, or Tailscale is needed. Existing matching-CA credentials migrate without changing keys or client IDs. See [epic3b-login.md](epic3b-login.md) for current implementation and validation.

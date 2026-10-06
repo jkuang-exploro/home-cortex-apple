@@ -71,7 +71,7 @@ struct ConnectionView: View {
                                 .disabled(connection.credential?.authenticationRejected == true || (connection.credential?.expiresAt ?? .distantPast) <= Date())
                                 .accessibilityIdentifier("connection.connect")
                         }
-                        Button("Forget credential and re-provision", role: .destructive) { confirmForget = true }
+                        Button("Sign out", role: .destructive) { confirmForget = true }
                             .font(.footnote)
                     }
 
@@ -115,11 +115,11 @@ struct ConnectionView: View {
             }
             importing = nil
         }
-        .alert("Forget this client credential?", isPresented: $confirmForget) {
+        .alert("Sign out of Home Cortex?", isPresented: $confirmForget) {
             Button("Cancel", role: .cancel) { }
-            Button("Forget", role: .destructive) { Task { await connection.forgetCredential() } }
+            Button("Sign out", role: .destructive) { Task { await connection.forgetCredential() } }
         } message: {
-            Text("This removes the device-held key and credential. A new operator invitation is required. Server-side revocation remains an operator action.")
+            Text("This removes this device's saved identity. You can sign in again with your Home Cortex web credentials.")
         }
     }
 

@@ -21,11 +21,20 @@ struct ClientConfiguration: Codable, Sendable, Equatable {
     func validate() throws {
         guard protocolVersion == "1.0", !serverHostname.isEmpty,
               serverHostname.range(of: "^[A-Za-z0-9][A-Za-z0-9.-]*$", options: .regularExpression) != nil,
-              serverHostname.range(of: "^[0-9.]+$", options: .regularExpression) == nil else { throw ClientFailure.configuration }
+              serverHostname.range(of: "^[0-9.]+$", options: .regularExpression) == nil
+                || Self.isIPv4(serverHostname) else { throw ClientFailure.configuration }
         for url in [serverEndpoint, bootstrapEndpoint] {
             guard url.scheme == "https", url.host?.lowercased() == serverHostname.lowercased(),
                   url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
                   ["", "/"].contains(url.path), (url.port ?? 443) > 0, (url.port ?? 443) <= 65535 else { throw ClientFailure.configuration }
+        }
+    }
+
+    static func isIPv4(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts.allSatisfy { part in
+            !part.isEmpty && part.allSatisfy(\.isNumber) && UInt8(part) != nil
+                && (part == "0" || !part.hasPrefix("0"))
         }
     }
 

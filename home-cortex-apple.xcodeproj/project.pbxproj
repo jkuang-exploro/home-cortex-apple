@@ -81,6 +81,7 @@
 			"children" = (
 				"287DC3D3A405206C6FF8C042",
 				"63A3BDCCFD82F51BBFDBDB30",
+				"F02061B936F553886088B7D5",
 			);
 		};
 		"BF63BBF5E4D00A6702C5284A" = {
@@ -147,6 +148,8 @@
 			"children" = (
 				"E0E27618A2D2A8FEBDD49F35",
 				"6828C06ADE22EFC1C369561B",
+				"E8BCACF12361C737431A593D",
+				"D87DB111F2BB4575CB4FC558",
 			);
 			"sourceTree" = "<group>";
 		};
@@ -402,6 +405,8 @@
 				"CA8D0704EA14C7D94D56F4F4",
 				"7B68248262B444998E716A49",
 				"8B514FF89BD28E3178D4DB1F",
+				"CBF91F23C9E66F7E0539035E",
+				"37755940E15C9BC6B72E844D",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -424,6 +429,8 @@
 			"files" = (
 				"716E9590E60B3AFA6E62BF18",
 				"C9B160E8ED87EB8F661F5E5F",
+				"2FAC2A0893FA20B4D0767ECD",
+				"F9459D99B0CA2CB16094ED0C",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -501,6 +508,7 @@
 				"5D3352A3BF2524B21DC367C9",
 				"7A7B8562AB4CFD90760E9EE8",
 				"AC2DF74BC969FD389A23CF08",
+				"0905A40B3B64779A49D59D1C",
 			);
 			"runOnlyForDeploymentPostprocessing" = "0";
 		};
@@ -525,6 +533,7 @@
 			"sourceTree" = "<group>";
 			"children" = (
 				"C1AE28074D5A9C0476932701",
+				"848ADD0B2DE6BF190176D1EF",
 			);
 		};
 		"ED8772ADEC3A6C25161BC957" = {
@@ -771,6 +780,7 @@
 				"B1ED614499237D266902BEBC",
 				"9C559C2510DECE5D063FDD51",
 				"7344C5B2AECC92FD0601A25E",
+				"1105F85128FA5D99F2EA81F0",
 			);
 			"sourceTree" = "<group>";
 		};
@@ -909,6 +919,56 @@
 		"B2C000000000000000000002" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "B2C000000000000000000001";
+		};
+		"0905A40B3B64779A49D59D1C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "1105F85128FA5D99F2EA81F0";
+		};
+		"2FAC2A0893FA20B4D0767ECD" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "E8BCACF12361C737431A593D";
+		};
+		"1105F85128FA5D99F2EA81F0" = {
+			"path" = "SoftwareLoginTests.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"F02061B936F553886088B7D5" = {
+			"path" = "SoftwareLogin.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"F9459D99B0CA2CB16094ED0C" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "D87DB111F2BB4575CB4FC558";
+		};
+		"37755940E15C9BC6B72E844D" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "848ADD0B2DE6BF190176D1EF";
+		};
+		"D87DB111F2BB4575CB4FC558" = {
+			"path" = "HomeCortexCA.txt";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text";
+			"sourceTree" = "<group>";
+		};
+		"848ADD0B2DE6BF190176D1EF" = {
+			"path" = "LoginView.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"E8BCACF12361C737431A593D" = {
+			"path" = "Household.json";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.json";
+			"sourceTree" = "<group>";
+		};
+		"CBF91F23C9E66F7E0539035E" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F02061B936F553886088B7D5";
 		};
 	};
 	"rootObject" = "98F54143AB4E86B28C3AFEE0";

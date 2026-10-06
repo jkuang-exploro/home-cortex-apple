@@ -118,7 +118,7 @@ final class ProvisioningTests: XCTestCase {
 }
 
 @MainActor
-private final class ProvisioningMemoryStore: CredentialStoring {
+final class ProvisioningMemoryStore: CredentialStoring {
     var metadata: CredentialMetadata?
     var pending: PendingEnrollment?
     var lastFinished: PendingEnrollment?
@@ -126,7 +126,10 @@ private final class ProvisioningMemoryStore: CredentialStoring {
     var identityMissing = false
     var storageFails = false
     var phases: [ProvisioningState] = []
-    let config: ClientConfiguration
+    var ca = "test-only"
+    var configurationWrites = 0
+    var caWrites = 0
+    var config: ClientConfiguration
     init() throws { config = try V1ProtocolTests.config() }
     func load() throws -> CredentialMetadata? { metadata }
     func save(_ metadata: CredentialMetadata) throws { self.metadata = metadata }
@@ -156,14 +159,14 @@ private final class ProvisioningMemoryStore: CredentialStoring {
         self.pending = nil
         return metadata
     }
-    func trustedCA() throws -> String? { "test-only" }
-    func storeTrustedCA(_ pem: String) throws { }
+    func trustedCA() throws -> String? { ca }
+    func storeTrustedCA(_ pem: String) throws { ca = pem; caWrites += 1 }
     func configuration() throws -> ClientConfiguration? { config }
-    func storeConfiguration(_ configuration: ClientConfiguration) throws { }
+    func storeConfiguration(_ configuration: ClientConfiguration) throws { config = configuration; configurationWrites += 1 }
     func forget() throws { metadata = nil; pending = nil }
 }
 
-private actor ProvisioningTransport: V1Transport {
+actor ProvisioningTransport: V1Transport {
     enum Mode { case success, denied, expanded }
     let mode: Mode
     init(mode: Mode = .success) { self.mode = mode }

@@ -27,7 +27,7 @@ struct RootView: View {
     var body: some View {
         Group {
             if connection.credential != nil { ConversationView(connection: connection, chat: AppRuntime.chat) }
-            else { ConnectionView(connection: connection) }
+            else { LoginView(connection: connection) }
         }
             .task { connection.setForeground(scenePhase == .active) }
             .onChange(of: scenePhase) { _, phase in

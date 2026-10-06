@@ -3,12 +3,12 @@ import Foundation
 enum ClientFailure: Error, Sendable, Equatable, LocalizedError {
     case configuration, invalidInvitation, invitationExpired, trustRequired, invalidResponse, unsupportedProtocol
     case secureStorage(Int32), keyGeneration, invalidCertificate, credentialExpired, authenticationRequired
-    case transport, replaced
+    case transport, replaced, loginRejected
     case remote(V1Error)
 
     var errorDescription: String? {
         switch self {
-        case .configuration: "Choose HTTPS server origins with a matching DNS hostname and protocol 1.0."
+        case .configuration: "Choose HTTPS server origins with a matching hostname or IP address and protocol 1.0."
         case .invalidInvitation: "This invitation is invalid, expired, belongs to another server, or enables an embodiment. Request a software-client invitation."
         case .invitationExpired: "Invitation expired. Request a fresh software-client invitation."
         case .trustRequired: "Import the public Home Cortex CA from a trusted operator channel first."
@@ -17,10 +17,11 @@ enum ClientFailure: Error, Sendable, Equatable, LocalizedError {
         case .secureStorage: "Secure storage is unavailable. Unlock this device and try again."
         case .keyGeneration: "A device-held signing key could not be created."
         case .invalidCertificate: "The certificate, private key, or trusted CA does not match."
-        case .credentialExpired: "The client credential has expired. Operator re-provisioning is required."
+        case .credentialExpired: "The client credential has expired. Sign out and sign in again."
         case .authenticationRequired: "TLS authentication failed. Check the server trust and client credential; re-provision if revoked."
         case .transport: "Home Cortex is unreachable. Check the network and local-network permission."
         case .replaced: "This session was replaced. Connect explicitly to establish a new session."
+        case .loginRejected: "Sign-in failed. Use the same email and API key as Home Cortex web."
         case .remote(let e): e.displayMessage
         }
     }

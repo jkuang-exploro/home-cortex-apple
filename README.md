@@ -2,11 +2,11 @@
 
 `home-cortex-apple` is an independent native Swift/SwiftUI iPhone and iPad client. Its project and main shared scheme are named `home-cortex-apple`; the installed app is **Home Cortex**. It uses Client Interface V1 for provisioning/session control and the canonical Home Cortex conversation API over the same mTLS identity.
 
-The app discovers a trusted server, enrolls from an operator invitation, retains a device-held key in Keychain, authenticates with mTLS, and registers/renews a software-only session. **Connected** requires an authenticated, ACTIVE session with a valid lease. The provisioned app opens a native 老管家 conversation screen. There is no embodiment, physical capability, camera, microphone, telemetry, or legacy authentication fallback.
+Sign in with the same email and API key as `home_gui`. The app verifies the household server using its bundled public CA, generates a device-held key, and automatically requests its client certificate. It then authenticates with mTLS and registers/renews a software-only session. **Connected** requires an authenticated, ACTIVE session with a valid lease. The provisioned app opens a native 老管家 conversation screen. There is no embodiment, physical capability, camera, microphone, telemetry, or bearer fallback for session/chat requests.
 
 ## Build and run
 
-Prerequisites: Xcode 16.4 or newer, Swift 6, an installed iOS simulator runtime, and iOS/iPadOS 17.0 or newer. Current validation uses Xcode 27.0 / Swift 6.4. Real enrollment additionally needs the deployed V1 service, its public CA from a trusted channel, and an operator-authorized software-client invitation.
+Prerequisites: Xcode 16.4 or newer, Swift 6, an installed iOS simulator runtime, and iOS/iPadOS 17.0 or newer. Current validation uses Xcode 27.0 / Swift 6.4. Real enrollment needs the deployed household service and the same mapped email/API key used by Home Cortex web.
 
 ```sh
 open home-cortex-apple.xcodeproj
@@ -20,24 +20,28 @@ Use a simulator installed on your Mac. In Xcode, select the main scheme and an i
 
 ## Configuration and trust
 
-Debug initially reads non-secret `home-cortex-apple/Resources/Development.json`:
+The installation bundles `Resources/Household.json` and the original **public** household CA in `Resources/HomeCortexCA.txt`, for both Debug and Release:
 
 ```json
 {
-  "server_endpoint": "https://home-cortex-0:8443",
-  "bootstrap_endpoint": "https://home-cortex-0:8444",
-  "server_hostname": "home-cortex-0",
+  "server_endpoint": "https://192.168.68.59:8443",
+  "bootstrap_endpoint": "https://192.168.68.59:8444",
+  "server_hostname": "192.168.68.59",
   "protocol_version": "1.0"
 }
 ```
 
-Release requires an explicitly imported configuration and has no automatic development-origin fallback. **Server settings** imports the same closed JSON format. Operator-selected configuration persists in device-only Keychain storage. Origins must be HTTPS, match the DNS hostname, and contain no credentials, paths, query, or fragment. Configure device DNS/routing for that hostname; an IP substitution is not a certificate-validation workaround.
+Connect the phone to the household Wi-Fi and allow Home Cortex local-network access (Settings → Apps → Home Cortex → Local Network). The client connects directly to the fixed LAN IP; it needs no Tailscale connection or DNS. All requests use TLS 1.3, the bundled CA, and certificate IP SAN verification. No system CA installation or manual CA import is required for sign-in.
 
-Use **Import public CA** to select the operator-supplied PEM CA certificate, then **Check discovery**. Obtain the public CA through SSH or another authenticated operator channel and confirm its fingerprint with the operator. Trust is anchored only to that CA, with certificate validity, chain, and hostname checks. No insecure TLS switch exists. Allow the app's local-network prompt to reach the configured household server.
+Tap **Sign in**, enter the web email/API key, and keep the app open during enrollment. The key is cleared from the field on submission, used only for the HTTPS login request, and never stored. The server issues a ten-minute, software-only invitation internally; the phone generates its Secure Enclave key/CSR and requests its certificate automatically. Subsequent sessions and chat use the device certificate. The server binds the new client to the same mapped household person; removing/remapping that GUI identity removes this conversation permission.
+
+Existing credentials using `home-cortex-0` automatically migrate to the LAN endpoint only when their trusted CA matches the bundled CA. Their key, certificate, client ID, expiry, and rejection status are preserved. The server certificate retains the old DNS SAN and adds `192.168.68.59` as an IP SAN using the original CA/server key.
+
+**Sign out** deletes the local device identity/key; the next sign-in obtains a new credential. Local sign-out does not revoke the server credential. **Advanced connection setup** retains manual configuration, CA import, discovery, and operator-invitation enrollment for maintenance. Imported origins must be HTTPS with a matching DNS hostname or valid IPv4 address and no credentials, paths, query, or fragment.
 
 Discovery uses `GET /client-interface/v1/discovery` on **8444** before enrollment and requires protocol `1.0` / envelope schema `1`. Compatible discovery alone never means Connected. Authenticated discovery/session messages use **8443**, which requires mTLS. The deployed proxy deliberately rejects enrollment on 8443.
 
-## Operator invitation and enrollment
+## Advanced operator invitation and enrollment
 
 The provisioner must be authorized for **`embodiment_id: null`**. Epic 3B.1a added that specific provisioning grant to the deployed existing operator, preserving its identity, certificate, and previous MacBook grant. Future deployments can use the backend's `grant-software-provisioning` offline maintenance command; stop the API, take its protected backup, apply the grant, and restart. Do not grant the phone an embodiment or vision permissions to bypass a restriction.
 
@@ -82,7 +86,7 @@ Provisioning is tracked as Not Provisioned → Invitation selected → Generatin
 
 The returned certificate must match the key and chain to the originally supplied CA. The issued client ID, certificate/chain, trusted CA, key reference, configuration, and earliest certificate/registry expiry are stored in device-only Keychain items. Tokens are retained only while provisioning runs. Remove consumed invitation copies from transfer/operator storage; never commit or log them.
 
-Interrupted enrollment retains the exact CSR/key reference without retaining the token. Re-import the same valid invitation to retry. Once provisioned, relaunch reconnects without another invitation. **Forget credential and re-provision** removes the local credential/key and requires a fresh invitation. Forgetting locally does not revoke the server credential; remembering a client ID grants no authority.
+Interrupted enrollment retains the exact CSR/key reference without retaining the token. Re-import the same valid invitation to retry. Once provisioned, relaunch reconnects without another invitation. **Sign out** removes the local credential/key and allows another web-credential sign-in or a fresh manual invitation. Forgetting locally does not revoke the server credential; remembering a client ID grants no authority.
 
 After successful enrollment, remove `apple-invitation.json` from iPhone Files and delete the two temporary copies:
 
@@ -133,7 +137,7 @@ The full physical UI target needs its own runner provisioning profile. Refresh t
 1. Connect/unlock the iPhone, trust the Mac if prompted, and enable Developer Mode if Xcode requests it.
 2. Copy `Config/Signing.example.xcconfig` to ignored `Config/Signing.local.xcconfig`; choose your team ID/bundle namespace and keep automatic signing enabled. Select the team in Xcode if necessary.
 3. Run on the iPhone. Stop debugging and launch Home Cortex from its Home Screen icon. Verify Not Provisioned before real enrollment.
-4. Import trusted CA/configuration and a real software-client invitation. Verify Connected, Protocol 1.0, Session Active, and Embodiment Not enabled.
+4. Connect to household Wi-Fi, allow local-network access, and sign in using web credentials. Verify Connected, Protocol 1.0, Session Active, and Embodiment Not enabled.
 5. Force quit/relaunch, background/foreground, interrupt/restore Wi-Fi, and perform a coordinated backend restart. Verify truthful state and fresh session fences on recovery.
 6. Have the operator revoke only this Apple client's credential through the backend's documented procedure. The current offline journal procedure requires a coordinated service stop/restart. Verify loss of Connected and the re-provisioning requirement.
 
@@ -141,11 +145,11 @@ Actual results/blockers are recorded in [.llm/epic3b-v1-connection.md](.llm/epic
 
 ## Structure and next milestone
 
-`App/` owns the root/lifecycle, `Features/Connection/` owns the UI, `Core/V1/` owns configuration/protocol/transport/state, and `Core/Security/` owns standard CSR packing, certificate validation, and Keychain storage. Assets/non-secret Debug configuration live in `Resources/`; shared build settings live in `Config/`. No third-party networking or runtime dependency is required.
+`App/` owns the root/lifecycle, `Features/Connection/` owns the UI, `Core/V1/` owns configuration/protocol/transport/state, and `Core/Security/` owns standard CSR packing, certificate validation, and Keychain storage. Assets, public CA, and non-secret installation configuration live in `Resources/`; shared build settings live in `Config/`. No third-party networking or runtime dependency is required.
 
 Apple references: [device deployment](https://developer.apple.com/documentation/Xcode/running-your-app-on-simulated-or-physical-devices), [server trust evaluation](https://developer.apple.com/documentation/foundation/performing-manual-server-trust-authentication), [custom trust anchors](https://developer.apple.com/documentation/security/configuring-a-trust), and [certificate/key identities](https://developer.apple.com/documentation/security/secidentitycreate(_:_:_:)).
 
-The next milestone is 老管家 conversation/chat after real physical V1 acceptance.
+Sign-in and chat validation are recorded in `.llm/epic3b-login.md` and `.llm/epic3b-chat.md`.
 
 ## 老管家 conversation
 
@@ -156,8 +160,7 @@ Enter Chinese or English text in the multiline composer; the original text goes
 to the canonical backend unchanged. Replies stream from real SSE events. Stop
 closes the existing response stream; the backend may preserve a partial reply.
 
-The operator must explicitly map this software client's ID to a household person
-using `CORTEX_CALLER_IDENTITY_MAP` on the server. A valid certificate alone does
+Automatic sign-in binds the software client to the GUI household person. For manually enrolled clients, the operator maps the client ID using `CORTEX_CALLER_IDENTITY_MAP` on the server. A valid certificate alone does
 not grant conversation authority. Chat uses the existing steward runtime whose
 entity is `agent:butler`, and never selects an active embodiment.
 

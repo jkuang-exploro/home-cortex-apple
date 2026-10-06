@@ -14,6 +14,9 @@ final class ConnectionUITests: XCTestCase {
 
     @MainActor
     private func assertUnprovisioned(_ app: XCUIApplication) {
+        XCTAssertTrue(app.staticTexts["login.title"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["login.submit"].isEnabled)
+        app.buttons["login.advanced"].tap()
         XCTAssertTrue(app.staticTexts["connection.title"].waitForExistence(timeout: 10))
         XCTAssertEqual(app.staticTexts["connection.state"].label, "Not Provisioned")
         XCTAssertEqual(app.staticTexts["connection.protocol"].label, "1.0")
@@ -25,5 +28,6 @@ final class ConnectionUITests: XCTestCase {
         if !provision.isHittable { app.swipeUp() }
         XCTAssertTrue(provision.exists)
         XCTAssertFalse(provision.isEnabled)
+        app.buttons["Done"].tap()
     }
 }

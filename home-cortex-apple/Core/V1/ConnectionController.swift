@@ -49,6 +49,7 @@ final class ConnectionController {
     private(set) var session: SessionView?
     private(set) var trustedCAAvailable = false
     private(set) var lease: SessionLease?
+    private(set) var signingIn = false
     @ObservationIgnored private let store: any CredentialStoring
     @ObservationIgnored private let factory: TransportFactory
     @ObservationIgnored private var worker: Task<Void, Never>?
@@ -75,6 +76,32 @@ final class ConnectionController {
     var canProvision: Bool { credential == nil && configuration != nil && trustedCAAvailable && !busy }
     var busy: Bool { [.provisioning, .discovering, .authenticating, .registering].contains(state) }
 
+    func signIn(email: String, apiKey: String, gateway: (any SoftwareLoginGateway)? = nil) async {
+        guard credential == nil, !busy, !signingIn else { return }
+        stopTasks()
+        let token = generation
+        signingIn = true
+        provisioning = .notProvisioned
+        transition(.provisioning)
+        defer { signingIn = false }
+        do {
+            let login = try gateway ?? URLSessionSoftwareLogin(profile: LoginProfile.bundled())
+            let bootstrap = try await login.signIn(email: email.trimmingCharacters(in: .whitespacesAndNewlines), apiKey: apiKey)
+            guard token == generation, foreground else { return }
+            try store.storeConfiguration(bootstrap.configuration)
+            try store.storeTrustedCA(bootstrap.caPEM)
+            configuration = bootstrap.configuration
+            trustedCAAvailable = true
+            transition(.unconfigured)
+            await provision(invitationData: bootstrap.invitationData)
+        } catch {
+            guard token == generation else { return }
+            let error = failure(error)
+            provisioning = .failed(error)
+            transition(.failed(error))
+        }
+    }
+
     func conversationAccess() throws -> ConversationAccess {
         guard displayedState == .connected, let credential, let session else { throw ChatFailure.notConnected }
         return ConversationAccess(clientID: credential.clientID, sessionID: session.sessionID,
@@ -86,6 +113,11 @@ final class ConnectionController {
     private func reload() {
         do {
             credential = try store.load()
+            if let stored = credential, let profile = try? LoginProfile.bundled(),
+               let migrated = try? stored.migratedForLAN(profile: profile) {
+                try store.save(migrated)
+                credential = migrated
+            }
             configuration = try credential?.configuration ?? store.configuration() ?? ClientConfiguration.bundled()
             trustedCAAvailable = try credential != nil || store.trustedCA() != nil
             if let credential {
