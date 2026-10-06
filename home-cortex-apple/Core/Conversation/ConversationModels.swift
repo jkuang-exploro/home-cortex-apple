@@ -83,8 +83,7 @@ struct ConversationSend: Encodable, Sendable {
 
 enum ConversationEvent: Equatable, Sendable { case delta(String), complete }
 
-// Consume real SSE records. Foundation's AsyncBytes.lines preserves UTF-8
-// across packet boundaries; record framing and completion are validated here.
+// Consume SSE records after byte framing has preserved their blank separators.
 struct ConversationSSEParser {
     private var dataLines: [String] = []
     private var recordBytes = 0
@@ -133,4 +132,36 @@ struct ConversationSSEParser {
         return []
     }
     func validateEnd() throws { guard done else { throw ChatFailure.invalidResponse } }
+}
+
+// Foundation's AsyncBytes.lines omits empty lines, including SSE's event
+// separators. Frame bytes directly, decoding UTF-8 only once a line is complete.
+struct ConversationSSEDecoder {
+    private var parser = ConversationSSEParser()
+    private var buffer = Data()
+    private var afterCR = false
+    private var byteCount = 0
+    var done: Bool { parser.done }
+
+    mutating func byte(_ byte: UInt8) throws -> [ConversationEvent] {
+        byteCount += 1
+        guard byteCount <= 1_048_576 else { throw ChatFailure.invalidResponse }
+        if afterCR {
+            afterCR = false
+            if byte == 10 { return [] } // CRLF is one terminator.
+        }
+        if byte == 10 || byte == 13 {
+            afterCR = byte == 13
+            guard let line = String(data: buffer, encoding: .utf8) else { throw ChatFailure.invalidResponse }
+            buffer.removeAll(keepingCapacity: true)
+            return try parser.line(line)
+        }
+        guard buffer.count < 131_072 else { throw ChatFailure.invalidResponse }
+        buffer.append(byte)
+        return []
+    }
+    func validateEnd() throws {
+        guard buffer.isEmpty else { throw ChatFailure.invalidResponse }
+        try parser.validateEnd()
+    }
 }

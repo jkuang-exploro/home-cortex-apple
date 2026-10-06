@@ -95,15 +95,12 @@ final class URLSessionConversationTransport: ConversationTransport, @unchecked S
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         let (bytes, raw) = try await session.bytes(for: request)
         guard try validate(raw).mimeType == "text/event-stream" else { throw ChatFailure.invalidResponse }
-        var parser = ConversationSSEParser()
-        var count = 0
-        for try await line in bytes.lines {
+        var decoder = ConversationSSEDecoder()
+        for try await byte in bytes {
             try Task.checkCancellation()
-            count += line.utf8.count
-            guard count <= 1_048_576 else { throw ChatFailure.invalidResponse }
-            for event in try parser.line(line) { try await receive(event) }
-            if parser.done { break }
+            for event in try decoder.byte(byte) { try await receive(event) }
+            if decoder.done { break }
         }
-        try parser.validateEnd()
+        try decoder.validateEnd()
     }
 }

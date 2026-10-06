@@ -42,6 +42,14 @@ Root uses a shared native connection/chat model so hosted physical tests exercis
 
 Unlock and keep the physical phone awake for real chat integration; observe native UI on the installed app. Complete actual network interruption/restoration and force-quit/relaunch checks. The foreground transition test is not a substitute for toggling real phone connectivity. iPad build passed, but authenticated iPad conversation requires separately provisioning an iPad; no iPhone key is copied there. Main-thread certificate/Keychain setup retains the previously observed responsiveness warning; physical responsiveness needs observation. No backend idempotency guarantee or server-side cancellation acknowledgment exists. A partial reply may persist after Stop, and a stream persistence failure is only observable when history is reloaded under current canonical backend behavior.
 
+## Follow-up: valid replies rejected by client (23:14 PDT)
+
+The user reported valid responses consistently marked invalid. Reproduced the cause with Foundation URL.lines: it drops blank lines. URLSession.AsyncBytes.lines uses the same line iteration behavior, so SSE event boundaries were lost and the parser combined JSON frames until EOF. The original line-based unit test supplied separators directly and did not cover this transport behavior.
+
+Replaced stream `.lines` iteration with a bounded raw-byte decoder preserving LF, CRLF, and bare-CR separators. UTF-8 is decoded only after a complete line, so packet boundaries cannot split Chinese/emoji into invalid strings. Existing per-record/total limits, canonical chunk validation, stop/[DONE] requirements, TLS authentication, and uncertain-send policy remain in force. Added two regressions exercising the complete framed byte stream one byte at a time, all three newline formats, comments, split Unicode, invalid UTF-8, truncation, and oversized lines.
+
+Focused conversation suite: seven passed, zero skipped/failed (`.local/3B2SSEFixTests.xcresult`). Signed phone build, fixed-app installation, and iPad Release build passed. Production logs show successful 200 conversation GET/POSTs from the reported usage; no backend source/config changes were needed. Phone remains locked at verification, so corrected on-device streaming is not yet claimed. Existing valid replies can be recovered by reopening/reloading canonical server history without resending them.
+
 Current blockers: locked phone prevents real physical chat test execution; physical network/relaunch/UI acceptance is not yet observed. Automated UI-runner signing is unavailable; manual physical UI acceptance can complete that part without copying any credential.
 
 APPLE 老管家 CHAT: BLOCKED

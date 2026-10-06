@@ -32,6 +32,37 @@ private actor ChatStub: ConversationTransport {
 }
 
 final class ConversationTests: XCTestCase {
+    func testByteStreamPreservesSSEBlankSeparatorsAndSplitUnicode() throws {
+        let frames = [
+            ": padding",
+            "data: {\"id\":\"chatcmpl-live\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}",
+            "data: {\"id\":\"chatcmpl-live\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"您是匡健。🌏\\nEnglish\"},\"finish_reason\":null}]}",
+            "data: {\"id\":\"chatcmpl-live\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+            "data: [DONE]"
+        ]
+        for newline in ["\n", "\r\n", "\r"] {
+            var decoder = ConversationSSEDecoder()
+            var events: [ConversationEvent] = []
+            let raw = frames.joined(separator: newline + newline) + newline + newline
+            // One byte at a time deliberately splits every multi-byte character.
+            for byte in raw.utf8 { events += try decoder.byte(byte) }
+            try decoder.validateEnd()
+            XCTAssertEqual(events, [.delta("您是匡健。🌏\nEnglish"), .complete])
+        }
+    }
+
+    func testByteStreamRejectsTruncationInvalidUTF8AndOversizedLines() throws {
+        var truncated = ConversationSSEDecoder()
+        for byte in "data: [DONE]".utf8 { _ = try truncated.byte(byte) }
+        XCTAssertThrowsError(try truncated.validateEnd())
+        var invalid = ConversationSSEDecoder()
+        _ = try invalid.byte(0xff)
+        XCTAssertThrowsError(try invalid.byte(10))
+        var oversized = ConversationSSEDecoder()
+        for _ in 0..<131_072 { _ = try oversized.byte(97) }
+        XCTAssertThrowsError(try oversized.byte(97))
+    }
+
     func testCanonicalSchemasPreserveOriginalUnicode() throws {
         for text in ["我是谁", "你是谁", "我岳父是谁", "我家里都有谁", "Who am I?", "Who are you?", "Who is in my household?", "  中英 English\n👨‍👩‍👧‍👦  "] {
             let encoded = try JSONEncoder().encode(ConversationSend(content: text))
