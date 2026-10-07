@@ -60,11 +60,12 @@ final class SecurityTests: XCTestCase {
 
     @MainActor
     func testKeychainMetadataWithoutPrivateKeyCannotClaimProvisioned() throws {
-        let store = KeychainCredentialStore(service: "HomeCortex.SecurityTests." + UUID().uuidString)
+        let service = "HomeCortex.SecurityTests." + UUID().uuidString
+        let store = KeychainCredentialStore(service: service)
         defer { try? store.forget() }
         let certificate = String(decoding: try V1ProtocolTests.fixtureData("test-server", extension: "txt"), as: UTF8.self)
         let ca = String(decoding: try V1ProtocolTests.fixtureData("test-ca", extension: "txt"), as: UTF8.self)
-        let metadata = CredentialMetadata(clientID: "client:missing-key", keyTag: Data(UUID().uuidString.utf8),
+        let metadata = CredentialMetadata(clientID: "client:missing-key", keyTag: Data((service + "." + UUID().uuidString).utf8),
             configuration: try V1ProtocolTests.config(), certificatePEM: certificate, caChainPEM: ca, trustedCAPEM: ca,
             expiresAt: Date().addingTimeInterval(3600))
         try store.save(metadata)

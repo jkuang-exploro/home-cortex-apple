@@ -51,12 +51,19 @@ struct ClientConfiguration: Codable, Sendable, Equatable {
 struct ProvisioningInvitation: Sendable {
     let invitationID: String
     let token: String
+    let embodimentID: String?
+    let purpose: CredentialPurpose
+    let visionObserveGranted: Bool
 
-    init(data: Data, configuration: ClientConfiguration) throws {
+    init(data: Data, configuration: ClientConfiguration, purpose: CredentialPurpose = .caller) throws {
+        self.purpose = purpose
         do {
             let value = try JSONValue.decode(data)
             guard case .object(let raw) = value else { throw ClientFailure.invalidInvitation }
             let compact = raw["bootstrap_endpoint"] != nil
+            let body = try raw.field("embodiment_id")
+            embodimentID = body == .null ? nil : try body.string()
+            guard (purpose == .caller && embodimentID == nil) || (purpose == .device && embodimentID?.range(of: "^embodiment:[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)*$", options: .regularExpression) != nil) else { throw ClientFailure.invalidInvitation }
             let o = try value.object(required: compact
                 ? ["invitation_id", "token", "bootstrap_endpoint", "embodiment_id"]
                 : ["invitation_id", "token", "expires_at", "server_endpoint", "embodiment_id", "purpose", "grants"])
@@ -64,16 +71,15 @@ struct ProvisioningInvitation: Sendable {
             token = try o.field("token").string()
             guard invitationID.range(of: "^invitation:[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
                   token.range(of: "^[A-Za-z0-9_-]{43,64}$", options: .regularExpression) != nil,
-                  try o.field("embodiment_id") == .null else { throw ClientFailure.invalidInvitation }
+                  try o.field("embodiment_id") == body else { throw ClientFailure.invalidInvitation }
             if compact {
+                guard purpose == .caller else { throw ClientFailure.invalidInvitation }
+                visionObserveGranted = false
                 guard URL(string: try o.field("bootstrap_endpoint").string())?.matchesV1Origin(configuration.bootstrapEndpoint) == true else { throw ClientFailure.invalidInvitation }
             } else {
                 guard URL(string: try o.field("server_endpoint").string())?.matchesV1Origin(configuration.serverEndpoint) == true,
-                      try o.field("purpose").string() == "CALLER",
-                      case .array(let grants) = try o.field("grants"), grants.count == 1 else { throw ClientFailure.invalidInvitation }
-                let grant = try grants[0].object(required: ["embodiment_id", "verb", "capability"])
-                guard try grant.field("embodiment_id") == .null, try grant.field("verb").string() == "session",
-                      try grant.field("capability") == .null else { throw ClientFailure.invalidInvitation }
+                      try o.field("purpose").string() == purpose.rawValue else { throw ClientFailure.invalidInvitation }
+                visionObserveGranted = try V1Grants.visionObserve(o.field("grants"), body: embodimentID, purpose: purpose)
                 guard try V1Time.parse(o.field("expires_at").string()) > Date() else { throw ClientFailure.invitationExpired }
             }
         } catch ClientFailure.invitationExpired { throw ClientFailure.invitationExpired }
@@ -86,5 +92,18 @@ extension URL {
         scheme == "https" && user == nil && password == nil && query == nil && fragment == nil
             && ["", "/"].contains(path) && host?.lowercased() == other.host?.lowercased()
             && (port ?? 443) == (other.port ?? 443)
+    }
+}
+
+/// Closed authority: session, optionally receive vision.observe on this DEVICE body.
+enum V1Grants {
+    static func visionObserve(_ value: JSONValue, body: String?, purpose: CredentialPurpose) throws -> Bool {
+        guard case .array(let grants) = value else { throw ClientFailure.invalidInvitation }
+        let target = body.map(JSONValue.string) ?? .null
+        let session = JSONValue.object(["embodiment_id": target, "verb": .string("session"), "capability": .null])
+        let vision = JSONValue.object(["embodiment_id": target, "verb": .string("receive"), "capability": .string("vision.observe")])
+        if grants == [session] { return false }
+        guard purpose == .device, body != nil, grants.count == 2, grants.contains(session), grants.contains(vision) else { throw ClientFailure.invalidInvitation }
+        return true
     }
 }

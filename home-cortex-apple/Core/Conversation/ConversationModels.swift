@@ -59,7 +59,8 @@ struct ConversationDocument: Decodable, Sendable {
         guard data.count <= 2_097_152 else { throw ChatFailure.invalidResponse }
         let value = try JSONDecoder().decode(Self.self, from: data)
         guard validID(value.id), value.object == "conversation", value.agent_id == "steward",
-              value.agent_entity_id == "agent:butler", value.active_embodiment_id == nil,
+              value.agent_entity_id == "agent:butler",
+              value.active_embodiment_id == nil || value.active_embodiment_id?.range(of: "^embodiment:[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)*$", options: .regularExpression) != nil,
               value.messages.count <= 10_000,
               Set(value.messages.map(\.id)).count == value.messages.count,
               value.messages.allSatisfy({ validID($0.id) && $0.content.utf8.count <= 1_048_576 }) else {

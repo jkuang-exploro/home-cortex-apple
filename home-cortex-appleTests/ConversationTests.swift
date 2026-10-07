@@ -10,10 +10,17 @@ private actor ChatStub: ConversationTransport {
     var mode = Mode.success
     var sends: [String] = []
     var histories: [String] = []
+    var active: String?
+    func setActive(id: String, embodimentID: String?, sessionID: String) throws -> ConversationDocument {
+        active = embodimentID
+        let body = embodimentID.map { "\"" + $0 + "\"" } ?? "null"
+        return try ConversationDocument.decode(Data(String(decoding: transcript, as: UTF8.self).replacingOccurrences(of: "null", with: body).utf8))
+    }
     func setMode(_ value: Mode) { mode = value }
     func history(id: String, sessionID: String) throws -> ConversationDocument {
         histories.append(id)
-        return try ConversationDocument.decode(transcript)
+        let body = active.map { "\"" + $0 + "\"" } ?? "null"
+        return try ConversationDocument.decode(Data(String(decoding: transcript, as: UTF8.self).replacingOccurrences(of: "null", with: body).utf8))
     }
     func selectOrCreate(sessionID: String) throws -> ConversationDocument { try ConversationDocument.decode(transcript) }
     func stream(id: String, content: String, sessionID: String,
@@ -63,6 +70,27 @@ final class ConversationTests: XCTestCase {
         XCTAssertThrowsError(try oversized.byte(97))
     }
 
+    @MainActor func testActiveSelectionIsServerContextAndPreservesChat() async throws {
+        let stub = ChatStub()
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let controller = ConversationController(defaults: defaults) {
+            ConversationAccess(clientID: "client:caller", sessionID: "runtime-session:caller", origin: URL(string: "https://example.test:8443")!, transport: stub)
+        }
+        controller.load()
+        for _ in 0..<100 { if controller.state == .ready { break }; try await Task.sleep(for: .milliseconds(10)) }
+        controller.selectEmbodiment("embodiment:phone")
+        for _ in 0..<100 { if controller.state == .ready { break }; try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(controller.activeEmbodimentID, "embodiment:phone")
+        XCTAssertEqual(controller.messages.first?.content, "先生，您回来了。")
+        controller.draft = "你现在能看到什么？"
+        XCTAssertTrue(controller.canSend)
+        controller.load()
+        for _ in 0..<100 { if controller.state == .ready { break }; try await Task.sleep(for: .milliseconds(10)) }
+        controller.selectEmbodiment(nil)
+        for _ in 0..<100 { if controller.state == .ready { break }; try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(controller.activeEmbodimentID)
+    }
+
     func testCanonicalSchemasPreserveOriginalUnicode() throws {
         for text in ["我是谁", "你是谁", "我岳父是谁", "我家里都有谁", "Who am I?", "Who are you?", "Who is in my household?", "  中英 English\n👨‍👩‍👧‍👦  "] {
             let encoded = try JSONEncoder().encode(ConversationSend(content: text))
@@ -74,11 +102,13 @@ final class ConversationTests: XCTestCase {
         XCTAssertEqual(document.id, "thread_123")
         XCTAssertEqual(document.history.first?.content, "先生，您回来了。")
         XCTAssertEqual(document.history.first?.state, .complete)
-        for invalid in ["agent:other", "embodiment:phone"] {
+        for invalid in ["agent:other", "invalid-body"] {
             let data = Data(String(decoding: transcript, as: UTF8.self)
                 .replacingOccurrences(of: invalid.hasPrefix("agent") ? "agent:butler" : "null", with: invalid.hasPrefix("agent") ? invalid : "\"\(invalid)\"").utf8)
             XCTAssertThrowsError(try ConversationDocument.decode(data))
         }
+        let active = try ConversationDocument.decode(Data(String(decoding: transcript, as: UTF8.self).replacingOccurrences(of: "null", with: "\"embodiment:phone\"").utf8))
+        XCTAssertEqual(active.active_embodiment_id, "embodiment:phone")
         XCTAssertThrowsError(try ConversationDocument.decode(Data("{}".utf8)))
     }
 

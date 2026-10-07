@@ -27,8 +27,8 @@ enum JSONValue: Codable, Sendable, Equatable {
         }
     }
 
-    static func decode(_ data: Data) throws -> JSONValue {
-        guard data.count <= 131_072 else { throw ClientFailure.invalidResponse }
+    static func decode(_ data: Data, maxBytes: Int = 131_072) throws -> JSONValue {
+        guard data.count <= maxBytes else { throw ClientFailure.invalidResponse }
         var scanner = JSONKeyScanner(bytes: Array(data))
         let value = try scanner.value(depth: 0)
         scanner.whitespace()

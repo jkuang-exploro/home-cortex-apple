@@ -1,0 +1,63 @@
+Date: 2026-10-06 23:36 PDT
+Type: coding
+Status: partial
+
+## Objective and context
+Implement Epic 3B.3b using the frozen Client Interface V1: optional iPhone DEVICE rear-camera `vision.observe`, canonical VisualEvidence, duplicate suppression, and existing conversation `active_embodiment_id`. Preserve CALLER chat and the established persistent phone body. Applied the backend persistent work-log skill. The user confirmed the phone initially showed Enabled/Online, but the prior 3B.3a physical acceptance report remains BLOCKED; its attempted hosted test again could not launch before the phone relocked and was cancelled.
+
+## Authority and provisioning
+The canonical body remains `embodiment:9439ee2fd3be49e99c4e21004ccfe208`, assigned to `agent:butler`. Its existing geometry/frame and opaque ID are retained. Explicit operator maintenance changed only configured capabilities from empty to `vision.observe`; readback retained the association. The existing session-only DEVICE credential was not silently broadened or revoked.
+
+Added `scripts/create_vision_invitation.py`: operator-side canonical body maintenance, fixed-LAN mTLS pairing, and an exclusive private full V1 invitation containing exactly body-bound `session` plus `receive: vision.observe`. It reuses the public retained profile, rejects unrelated configured capabilities/association, never copies CA/private client keys, and prints no token. `--prepare-only` performs canonical configuration without issuing an invitation. The earlier helper attempt updated the body successfully but tried to write the host profile inside an unmounted container path; corrected to return only the public canonical profile and copy it through the operator host. The idempotent rerun succeeded.
+
+The native Upgrade Vision Access sheet explicitly replaces only DEVICE key/certificate/client ID. The invitation must name the same retained body, and enrollment authority must exactly match the requested narrow profile. CALLER is unchanged. DEVICE retains its body ID in a separate Keychain record, including during an unsuccessful replacement, and prevents switching it through upgrade. Original session-only and old CALLER records remain compatible. Previous DEVICE revocation is a separate coordinated operator action after successful replacement/acceptance; it has not been performed.
+
+## Camera, availability, and lifecycle
+`StillImageCapture` is a narrow main-actor camera port. `NativeStillImageCapture` owns a single photo operation on a serial AVFoundation queue. It uses the rear primary wide-angle camera, fresh AVCapturePhotoSettings per request, and capture delegate timestamps, following the [native photo-output contract](https://developer.apple.com/documentation/avfoundation/avcapturephotooutput/capturephoto(with:delegate:)). A session runs only for that accepted still and then stops. There is no cached preview, continuous stream, clip buffer, audio input, or local reasoning. Native capture has a bounded deadline, cancellation, visible operational errors, and orientation-normalized JPEG encoding through ImageIO.
+
+Permission is requested only by Enable Camera or explicit selection of the upgraded phone for chat. Launch/chat/CALLER connect never prompts. NotDetermined is temporarily unavailable; denied/restricted maps to PERMISSION_DENIED; authorized requires a rear camera. Support remains in the manifest while unavailable. Background/disable cancels capture/polling; foreground uses the persistent identity and a new session fence. Camera permission recovery needs no re-provisioning.
+
+The DEVICE manifest contains only `vision.observe`, schema version 1, current availability/reason, and a bounded media limit. The session controller owns revisions: each registration starts at 1; changed capability content increments the current session revision exactly once. A strict regression caught and corrected the earlier producer-wide revision strategy, which would have failed reconnect or skipped revisions after multiple changes. CALLER continues advertising an empty manifest.
+
+## Wire handling and evidence
+The standard DEVICE `/client-interface/v1/commands` and `/messages` channels use pinned TLS 1.3 and the DEVICE identity. Polling accepts only its owned active session. Commands validate closed envelope, protocol/schema versions, UUID request/message IDs, target body/session, argument shape, availability/effective authority, and deadline before capture. Background, replaced fences, disable, and rejected authentication cannot upload under another session. A command response requires the standard 204 acknowledgment.
+
+Each new logical command takes a fresh still after acceptance. The manifest records the real persistent body, `camera:rear-primary`, capture instant/interval, dimensions, sequence, media/content types, SHA-256, and `manual_observe` reason. JPEGs are normalized to at most 1280 pixels, bounded to 1 MiB and the discovered server limit, and sent as base64 bytes. No URLs/local paths or caller ID substitute for provenance. The client constructs VisualEvidence; unchanged Home Cortex verification produces AcceptedEvidence and the existing vision pipeline performs interpretation.
+
+Canonical evidence identity uses the exact frozen sorted-key compact UTF-8 JSON encoding (unescaped Unicode and slash, canonical control escaping), SHA-256, and its 32-hex-character evidence-ID prefix. Both shared ASCII and Unicode golden vectors match Swift. An actual Swift-produced synthetic result was exported by XCTest and verified through unchanged backend V1 command intake; it exactly equals the shared Python vector. The synthetic JPEG is a protocol fixture, not a real scene or physical-camera proof.
+
+Protected atomic receipts bind to DEVICE client/body and commit/synchronize before capture and before upload. Exact duplicate requests reuse the same response, including message/completion IDs. Concurrent duplicates wait for the original result. Changed content under the same ID is CONFLICT. A persisted uncertain pending receipt after a crash returns INTERNAL_ERROR and never recaptures. Results remain through deadline plus 24 hours; capacity is bounded to 128 records / approximately 64 MiB and refuses new captures when full. Permission, unavailable, busy, invalid arguments/media, timeout, internal error, and fencing failures use sanitized V1 error semantics.
+
+## Active embodiment integration
+The native chat selector calls the existing owned conversation PATCH `/active-embodiment` using CALLER mTLS/session authority. The server-returned `active_embodiment_id` is validated, displayed, and reloaded from history. Selecting This iPhone changes conversational physical context without mutating permanent assignment. Sending is held while selection is pending; chat history and original text remain intact. No Apple-specific endpoint, dispatch, or semantic route was introduced.
+
+## Validation
+- Full backend deterministic suite: 1,211 passed, 1 skipped (`.local/3B3b-backend-full.log`).
+- Backend V1/perception/evidence conformance, including actual Swift fixture intake/acknowledgment/replay and fake client: 37 passed (`.local/3B3b-backend-conformance.log`).
+- Existing MacBook V1/evidence suite: 22 passed (`.local/3B3b-macbook-conformance.log`). This verifies the implementation's shared profile; no real MacBook camera capture is claimed.
+- Apple full simulator suite after camera/media/manifest/body persistence changes: 67 tests, 60 passed, 7 expected optional/live/physical skips, zero failures (`.local/3B3bShippingUnit.xcresult`).
+- Focused final vision/provisioning/login security suite, including retained-body isolation: 19 passed (`.local/3B3bFinalSecurity.xcresult`).
+- Native setup/Files/cancellation/relaunch UI regression: one passed (`.local/3B3bUI.xcresult`).
+- Signed iPhone build-for-testing and iPad Release builds succeeded. Installed the vision build on the connected iPhone. Final shipping build/result paths are `.local/3B3b-shipping-phone.log`, `.local/3B3b-shipping-ipad.log`, and `.local/3B3bShippingUnit.xcresult`.
+- Project plist lint and both repository diff checks passed. Existing user AppIcon edit was preserved.
+
+## Performance instrumentation
+Runtime records request reception to actual shutter/capture start, native capture duration, JPEG/evidence encoding duration, response upload/acknowledgment duration, and total vision.observe handling latency. Timing appears in DEVICE settings and sanitized OSLog; public evidence/request IDs are available to the physical test. No hardware baseline numbers are reported because physical observation has not run. Synthetic/fake-camera timings are not substituted for iPhone measurements.
+
+## Physical acceptance and explicit blockers
+The prepared `PhysicalVisionTests` verifies real independent Secure Enclave principals, CALLER “我是谁”, server-returned phone conversation context, actual dispatched observation, fresh evidence/acknowledgment, nonempty canonical steward reply, and duplicate replay with no second physical capture. It requires an upgraded, enabled DEVICE and explicitly granted camera access.
+
+Production readback still showed only the original session-only phone DEVICE credential. The first vision invitation expired before import; the user has not yet confirmed the upgrade/permission step. No physical image, AcceptedEvidence from that image, scene-correct answer, changed-scene “现在呢？” freshness, denied/restored permission recovery, physical duplicate capture count, or Wi-Fi recovery has been validated. The 3B.3a physical prerequisite also remains outstanding. The phone was locked during the prerequisite launch; that waiting Xcode run was cancelled. No waiting physical run is left to take over the phone later.
+
+## Known limitations and recommended next step
+No vision.observe_clip, rolling buffer, autonomous promotion, local event detector, face recognition, audio, pose/location, mobility, or manipulation is implemented. Native replacement is an explicit credential change, not certificate rotation conformance. Old DEVICE revocation/cleanup must follow successful replacement verification. A full receipt store temporarily refuses new observation effects until retention frees space.
+
+Import the fresh private vision invitation using Upgrade Vision Access, grant Camera, keep the phone unlocked, and verify Runtime Online / Vision Available. Select This iPhone and run the prepared physical test against a recognizable scene. Then change the scene for “现在呢？”, deny/restore camera permission, interrupt/restore Wi-Fi, record real timings and scene verification, and finish the physical prerequisite/revocation checks. Update this report with actual evidence before marking the ticket passed.
+
+## Follow-up: CALLER selection authorization
+The physical user reported “Conversation access denied” when selecting This iPhone. Server logs and source confirmed the earlier CALLER policy blocked PATCH selection and subsequently hid body-selected conversations from owned history/listing. Corrected the exact selection permission and retained owned steward visibility, preserving person/session/role and canonical body assignment validation. Native conversation discovery also retains selected bodies. Added end-to-end authorization regressions: backend full suite now 1,212 passed / one skipped; focused caller/API 85 passed; eight native conversation tests passed. Backend correction deployed and signed native update installed. Physical selection, latest-conversation discovery, message stream and selected-body history passed on the real phone at 2026-10-07 00:00 PDT (.local/EmbodimentReadinessPhone.xcresult). The separate physical vision test explicitly skipped: DEVICE has not imported the vision upgrade. This fixes application authorization; it does not establish physical vision acceptance.
+
+## Follow-up: embodiment capability readiness
+Production credential readback confirmed only the original unrevoked session-only DEVICE for the retained phone body. No DEVICE enrollment with receive vision.observe exists. The real phone check independently confirmed that the explicit vision upgrade is missing; no camera effect was attempted. Issued a fresh narrowly scoped vision.observe replacement invitation via the existing operator pairing API, retaining body/association and all original credential grants. Its local and remote copies are private; it expires at 2026-10-07 00:10:26 PDT. Finder reveals the new copy, and the shipping app was relaunched. User must AirDrop this new copy, import via Upgrade Vision Access, and explicitly grant Camera. Selecting the body alone does not enroll capabilities or capture an image.
+
+APPLE IPHONE VISION.OBSERVE: BLOCKED

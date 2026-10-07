@@ -2,7 +2,7 @@
 
 `home-cortex-apple` is an independent native Swift/SwiftUI iPhone and iPad client. Its project and main shared scheme are named `home-cortex-apple`; the installed app is **Home Cortex**. It uses Client Interface V1 for provisioning/session control and the canonical Home Cortex conversation API over the same mTLS identity.
 
-Sign in with the same email and API key as `home_gui`. The app verifies the household server using its bundled public CA, generates a device-held key, and automatically requests its client certificate. It then authenticates with mTLS and registers/renews a software-only session. **Connected** requires an authenticated, ACTIVE session with a valid lease. The provisioned app opens a native 老管家 conversation screen. There is no embodiment, physical capability, camera, microphone, telemetry, or bearer fallback for session/chat requests.
+Sign in with the same email and API key as `home_gui`. The app verifies the household server using its bundled public CA, generates a device-held key, and automatically requests its client certificate. It then authenticates with mTLS and registers/renews a software-only CALLER session. **Connected** requires an authenticated, ACTIVE session with a valid lease. The provisioned app opens a native 老管家 conversation screen. You can separately opt in to an iPhone embodiment with an independent DEVICE credential and session. Its first optional physical capability is a fresh rear-camera still through `vision.observe`. Session/chat requests use mTLS.
 
 ## Build and run
 
@@ -143,6 +143,26 @@ The full physical UI target needs its own runner provisioning profile. Refresh t
 
 Actual results/blockers are recorded in [.llm/epic3b-v1-connection.md](.llm/epic3b-v1-connection.md). Simulator/mock lifecycle success does not establish physical mTLS acceptance.
 
+## Ephemeral developer camera preview
+
+In the signed-in web GUI, open **Embodiments → This iPhone → Start Preview**.
+The separate `/inspection/v1` surface requires an explicit backend person/body
+allowlist and the phone's live vision-enabled DEVICE session. Choose 2, 3, or 5
+target fps. Keep Home Cortex open on the phone; active preview keeps the screen
+awake. Locking, backgrounding, or **Pause Developer Preview** stops capture.
+
+The inspector shows real capture/receive timestamps, sequence, frame age, and
+canonical runtime metadata. **Pause Preview** freezes the visible image with a
+PAUSED label. Closing the last viewer stops publication within its short lease.
+One shared rear-camera session supplies modest JPEG previews and independent
+fresh canonical photos. Preview frames stay in memory, never become evidence,
+and never enter chat, facts, or reasoning. **Capture Evidence** separately invokes
+real `vision.observe` and reports the verified evidence ID and capture time.
+
+Implementation and physical acceptance are recorded in
+[the inspection report](.llm/epic1-embodiment-inspector-preview.md). Backend
+deployment/transport details are in `home-cortex/docs/embodiment-inspection.md`.
+
 ## Structure and next milestone
 
 `App/` owns the root/lifecycle, `Features/Connection/` owns the UI, `Core/V1/` owns configuration/protocol/transport/state, and `Core/Security/` owns standard CSR packing, certificate validation, and Keychain storage. Assets, public CA, and non-secret installation configuration live in `Resources/`; shared build settings live in `Config/`. No third-party networking or runtime dependency is required.
@@ -172,3 +192,159 @@ idempotency key, so uncertain submissions are never retried automatically.
 An unsent local failure may expose **Retry**; it has not reached the backend.
 
 Development and physical acceptance evidence: [.llm/epic3b-chat.md](.llm/epic3b-chat.md).
+
+## Optional iPhone embodiment (Epic 3B.3a)
+
+Chat retains its original **CALLER / null embodiment** credential. The optional
+physical role uses **DEVICE / one persistent embodiment**, its own Secure Enclave
+key/certificate/client ID, and a separate V1 session. DEVICE Keychain items use the
+`.v1.device` namespace; key tags, response targets, enrollment grants, and session
+principals are checked against the role. DEVICE cannot use household chat/admin
+routes. Session-only DEVICE credentials advertise an empty manifest. The explicit
+vision upgrade below adds only `vision.observe`; no microphone, telemetry,
+location, pose, or actuator capability is implemented.
+
+Open the gear menu and find **This iPhone**. Initially it shows **Not enabled**;
+installation, web sign-in, and app launch do not enable it. Tap **Enable as
+Embodiment**, confirm **Import DEVICE invitation**, and choose the operator-issued
+JSON in Files. The bundled household CA/LAN profile handles trust. The phone
+creates a new independent key/CSR and uses the existing V1 enrollment endpoint.
+A CALLER invitation, null-body DEVICE, unrelated capability grants, or mismatched
+origin is rejected before DEVICE key generation. CALLER credentials are never converted.
+
+The operator prepares one canonical `handheld` body with a random opaque ID and
+an `assigned_to` association to `agent:butler`, outside session registration.
+The public source profile is `.local/provisioning/iphone-embodiment.json`, also
+retained on the operator host. **Keep this profile when regenerating invitations**;
+reuse the same ID instead of creating a body on every reconnect. Current geometry
+is a nominal box in meters: thickness (x) 0.010, width (y) 0.075, height (z) 0.150,
+center (0,0,0). Intrinsic +x is outward through the display, +y toward the left
+edge, +z toward the top edge; forward×left=up. This establishes only a body frame,
+not a global pose or measured localization. Adjust the operator-owned geometry
+if a measured bounding box is required later.
+
+For a new deployment, generate and retain a random opaque `embodiment:<uuid>`
+profile using the canonical schema above. Against the configured backend DB,
+use `scripts.maintenance.embodiments create PROFILE.json`, then `assign BODY_ID
+agent:butler`. The existing provisioner needs one additional **provision** grant
+for that exact body. Stop the API before applying the offline journal change:
+
+```sh
+python -m scripts.maintenance.client_interface grant-device-provisioning \
+  --root /operator --embodiment-id BODY_ID \
+  --backup-file /operator/maintenance/before-device-grant.json
+```
+
+Run in the configured one-off API container as the operator UID with its protected
+V1 directory mounted at `/operator`, then restart the API. The command checks the
+existing body and valid provisioner, preserves its certificate/key and other
+grants, creates a protected backup, and never prints credentials. See backend
+`docs/client-interface-deployment.md` for the complete Compose commands.
+
+For the prepared development phone, regenerate an invitation from this Mac:
+
+```sh
+python3 scripts/create_device_invitation.py
+```
+
+It connects directly to `jkuang@192.168.68.59`, reuses the persistent profile,
+invokes `invite-device`, and writes the full V1 invitation to ignored
+`.local/provisioning/iphone-device-invitation.json` with mode 0600. It refuses to
+overwrite copies. Invitations expire in ten minutes. AirDrop to iPhone Files,
+then import through the explicit enable control. Delete consumed/expired
+invitation copies on phone/Mac/server; retain the public persistent profile.
+The equivalent operator command is:
+
+```sh
+PYTHONPATH=src .venv/bin/python -m scripts.maintenance.client_interface invite-device \
+  --root /home/jkuang/.local/share/home-cortex/client-interface \
+  --embodiment-id BODY_ID --endpoint https://192.168.68.59:8443 \
+  --output /home/jkuang/.local/share/home-cortex/client-interface/provisioning/iphone-device-invitation.json
+```
+
+The DEVICE invitation/credential has exactly one body-bound **session** grant
+and no physical capability grants. **Enabled** means the persistent DEVICE
+identity is provisioned; **Online** requires its own authenticated ACTIVE session
+with a live lease. Backgrounding, network loss, expired lease, revoked credential,
+or backend restart makes runtime offline while retaining the embodiment and
+association. Foreground/reconnect registers a fresh fence using the same identity.
+REPLACED stops automatic retries; reconnect explicitly. Timing and heartbeat
+intervals come from the server. Neither runtime engine keeps a false Connected
+label after its lease expires.
+
+**Disable Embodiment Runtime** clears local authority, disconnects only DEVICE,
+and persists local participation as disabled. It retains the key/certificate,
+body, and association across relaunch. **Enable Embodiment Runtime** resumes
+participation. Signing out or revoking CALLER does not erase DEVICE; the DEVICE
+section remains accessible from the sign-in screen's Advanced connection setup.
+No destructive body removal is provided. Revocation remains the existing operator
+V1 procedure, scoped to the exact DEVICE credential ID; coordinate a service
+restart for its offline journal mutation. A revoked DEVICE needs operator
+re-provisioning before participating again; this ticket provides no automatic
+certificate rotation or credential replacement UI.
+
+Validation and physical acceptance status:
+[.llm/epic3b-iphone-embodiment-identity.md](.llm/epic3b-iphone-embodiment-identity.md).
+
+
+## iPhone vision.observe (Epic 3B.3b)
+
+Vision uses only the DEVICE principal. The original CALLER email/API-key sign-in,
+key/certificate and chat remain independent. Existing session-only DEVICE
+credentials keep their original authority until you explicitly import an upgrade.
+
+1. On the operator Mac, run `python3 scripts/create_vision_invitation.py`. The
+   helper retains the same opaque phone body and association, configures only
+   `vision.observe` through canonical body maintenance, and requests a full V1
+   DEVICE invitation with exactly `session` plus `receive: vision.observe`.
+   `--prepare-only` configures the public profile without issuing an invitation.
+2. AirDrop `.local/provisioning/iphone-vision-invitation.json` to iPhone Files.
+   Invitations expire after ten minutes. Remove expired/consumed Mac and operator
+   invitation copies before regenerating; retain `iphone-embodiment.json`.
+3. Open **gear → This iPhone → Upgrade Vision Access → Import DEVICE invitation**.
+   The replacement must name the same body. The app generates a new DEVICE key
+   and certificate. It retains the body ID independently in DEVICE Keychain so a
+   failed upgrade can be retried; CALLER credentials remain unchanged.
+4. Tap **Enable Camera** and grant native camera permission. It is also requested
+   when explicitly choosing this upgraded phone in the chat embodiment selector.
+   Launching the app, opening chat, or connecting CALLER never requests it.
+5. In chat choose **Using embodiment → This iPhone**, point the rear camera at
+   the scene, and ask **你现在能看到什么？**. Change the scene, then ask **现在呢？**.
+   Selection updates the owned conversation's canonical `active_embodiment_id`;
+   it does not change the permanent association to 老管家.
+
+A denied/restricted camera remains supported but temporarily unavailable. Chat
+and DEVICE session control continue. Restore access in **Settings → Apps → Home
+Cortex → Camera** and return to the app. Availability updates use standard
+`session.capabilities`, with revision 1 on each registration and increments of
+exactly one within that session. Background/disable cancels capture and command
+polling; foreground/recovery registers a fresh fence for the same identity.
+
+The client uses the standard authenticated V1 `/commands` polling and `/messages`
+response channel. Each accepted new request takes a rear-primary AVFoundation
+photo after validating body/session, authority, availability, arguments and
+deadline. It normalizes orientation, encodes a JPEG up to 1280 pixels with a
+1 MiB local ceiling (also respecting server discovery limits), hashes the bytes,
+and produces the frozen VisualEvidence manifest and evidence ID. The server
+verifies bytes/provenance and performs vision reasoning through its existing
+pipeline. No Apple-specific vision endpoint, local visual reasoning, continuous
+capture, clip buffer, or autonomous promotion is added.
+
+Protected receipts commit before capture and before response upload. Exact
+redelivery uses the original response; concurrent redelivery waits for it. A
+crash with an uncertain pending receipt returns a sanitized error without taking
+another photo. Receipts bind to DEVICE client/body and retain their results for
+the request deadline plus 24 hours; capacity is bounded and rejects additional
+captures when full. Same-ID changed content is a conflict. Standard V1 error
+codes cover permission, temporary unavailability, busy, invalid arguments,
+timeout and internal failure.
+
+The previous DEVICE credential is not silently broadened or revoked. After the
+replacement has enrolled and passed physical checks, revoke **only the old
+DEVICE credential ID** using the backend's documented coordinated operator
+procedure. Keep the current DEVICE and CALLER credentials, body and association.
+
+Shared Python/Swift Unicode and ASCII evidence vectors, an actual Swift-produced
+synthetic wire artifact verified by the backend, and MacBook protocol/evidence
+tests establish conformance. Physical checks and camera/upload timing evidence
+are recorded separately in [.llm/epic3b-iphone-vision-observe.md](.llm/epic3b-iphone-vision-observe.md).

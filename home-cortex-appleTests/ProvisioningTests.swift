@@ -118,7 +118,13 @@ final class ProvisioningTests: XCTestCase {
 }
 
 @MainActor
-final class ProvisioningMemoryStore: CredentialStoring {
+final class ProvisioningMemoryStore: DeviceCredentialStoring {
+    var retainedBody: String?
+    func retainedEmbodiment() throws -> String? { retainedBody ?? metadata?.embodimentID }
+    func storeRetainedEmbodiment(_ id: String) throws { retainedBody = id }
+    var participation = false
+    func runtimeEnabled() throws -> Bool { participation }
+    func storeRuntimeEnabled(_ enabled: Bool) throws { participation = enabled }
     var metadata: CredentialMetadata?
     var pending: PendingEnrollment?
     var lastFinished: PendingEnrollment?
@@ -142,7 +148,7 @@ final class ProvisioningMemoryStore: CredentialStoring {
         if let pending { return pending }
         prepareCount += 1
         let pending = PendingEnrollment(invitationID: invitation.invitationID, keyTag: Data("mock-key-reference".utf8),
-            csrPEM: "MOCK-CSR-EXACT-RETRY", configuration: configuration, trustedCAPEM: caPEM)
+            csrPEM: "MOCK-CSR-EXACT-RETRY", configuration: configuration, trustedCAPEM: caPEM, visionObserveGranted: invitation.visionObserveGranted, embodimentID: invitation.embodimentID)
         self.pending = pending
         return pending
     }
@@ -154,7 +160,7 @@ final class ProvisioningMemoryStore: CredentialStoring {
         if storageFails { throw ClientFailure.secureStorage(-34018) }
         lastFinished = pending
         let metadata = CredentialMetadata(clientID: bundle.clientID, keyTag: pending.keyTag, configuration: pending.configuration,
-            certificatePEM: bundle.certificatePEM, caChainPEM: bundle.caChainPEM, trustedCAPEM: pending.trustedCAPEM, expiresAt: bundle.expiresAt)
+            certificatePEM: bundle.certificatePEM, caChainPEM: bundle.caChainPEM, trustedCAPEM: pending.trustedCAPEM, expiresAt: bundle.expiresAt, embodimentID: pending.embodimentID)
         self.metadata = metadata
         self.pending = nil
         return metadata

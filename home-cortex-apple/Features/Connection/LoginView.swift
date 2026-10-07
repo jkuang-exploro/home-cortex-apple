@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LoginView: View {
     @Bindable var connection: ConnectionController
+    var embodiment: EmbodimentController? = nil
     @State private var email = ""
     @State private var apiKey = ""
     @State private var showAdvanced = false
@@ -45,7 +46,7 @@ struct LoginView: View {
             .navigationTitle("Home Cortex").navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showAdvanced) {
                 NavigationStack {
-                    ConnectionView(connection: connection).toolbar { Button("Done") { showAdvanced = false } }
+                    ConnectionView(connection: connection, embodiment: embodiment).toolbar { Button("Done") { showAdvanced = false } }
                 }
             }
         }

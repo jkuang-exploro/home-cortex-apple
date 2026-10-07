@@ -8,12 +8,14 @@ protocol V1Transport: Sendable {
 
 final class URLSessionV1Transport: V1Transport, @unchecked Sendable {
     private let origin: URL
+    private let identityAvailable: Bool
     private let session: URLSession
     private let delegate: TLSDelegate
     private let logger = Logger(subsystem: "HomeCortex", category: "V1Transport")
 
     init(origin: URL, hostname: String, trustedCAPEM: String, identity: IdentityMaterial? = nil) throws {
         self.origin = origin
+        identityAvailable = identity != nil
         delegate = TLSDelegate(origin: origin, hostname: hostname, anchors: try CertificateTools.certificates(pem: trustedCAPEM), identity: identity)
         let config = URLSessionConfiguration.ephemeral
         config.tlsMinimumSupportedProtocolVersion = .TLSv13
@@ -32,7 +34,10 @@ final class URLSessionV1Transport: V1Transport, @unchecked Sendable {
     deinit { session.invalidateAndCancel() }
 
     func send(path: String, body: JSONValue? = nil) async throws -> JSONValue {
-        guard ["/client-interface/v1/discovery", "/client-interface/v1/enroll", "/client-interface/v1/messages"].contains(path),
+        let components = URLComponents(string: path)
+        let polling = components?.path == "/client-interface/v1/commands" && body == nil && identityAvailable
+            && components?.queryItems?.count == 1 && components?.queryItems?.first?.name == "session_id"
+        guard (["/client-interface/v1/discovery", "/client-interface/v1/enroll", "/client-interface/v1/messages"].contains(path) || polling),
               let url = URL(string: path, relativeTo: origin)?.absoluteURL,
               url.host == origin.host, url.port == origin.port else { throw ClientFailure.configuration }
         var request = URLRequest(url: url)
@@ -47,6 +52,7 @@ final class URLSessionV1Transport: V1Transport, @unchecked Sendable {
             try Task.checkCancellation()
             guard let response = raw as? HTTPURLResponse else { throw ClientFailure.invalidResponse }
             guard !(300..<400).contains(response.statusCode) else { throw ClientFailure.authenticationRequired }
+            if response.statusCode == 204 { guard data.isEmpty else { throw ClientFailure.invalidResponse }; return .null }
             guard data.count <= 131_072 else { throw ClientFailure.invalidResponse }
             let parsed = try? JSONValue.decode(data)
             if !(200..<300).contains(response.statusCode) {

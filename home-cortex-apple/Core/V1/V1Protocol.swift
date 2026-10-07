@@ -3,6 +3,7 @@ import Foundation
 enum DiscoveryState: String { case unknown, discovering, compatible, incompatible, failed }
 
 struct V1Discovery: Sendable {
+    let maxMediaBytes: Int
     init(_ value: JSONValue) throws {
         let o = try value.object(required: ["protocol_versions", "envelope_schema_versions", "promotion_max_age_ms", "max_media_bytes"])
         let versions = try o.field("protocol_versions").strings()
@@ -10,7 +11,9 @@ struct V1Discovery: Sendable {
         let schemaVersions = try schemas.map { try $0.integer(minimum: 1) }
         guard versions.contains("1.0"), schemaVersions.contains(1) else { throw ClientFailure.unsupportedProtocol }
         _ = try o.field("promotion_max_age_ms").integer(minimum: 1)
-        guard try o.field("max_media_bytes").integer(minimum: 1) <= 33_554_432 else { throw ClientFailure.invalidResponse }
+        let limit = try o.field("max_media_bytes").integer(minimum: 1)
+        guard limit <= 33_554_432 else { throw ClientFailure.invalidResponse }
+        maxMediaBytes = Int(limit)
     }
 }
 
@@ -18,27 +21,29 @@ struct V1Request: Sendable {
     let id: String
     let operation: String
     let sessionID: String?
+    let embodimentID: String?
     let deadline: Date
     let value: JSONValue
 
-    init(operation: String, sessionID: String? = nil, clientID: String, version: String, now: Date = Date()) {
+    init(operation: String, sessionID: String? = nil, clientID: String, version: String, embodimentID: String? = nil, now: Date = Date(), manifest: JSONValue? = nil) {
         id = UUID().uuidString.lowercased()
         self.operation = operation
         self.sessionID = sessionID
+        self.embodimentID = embodimentID
         deadline = now.addingTimeInterval(10)
         let arguments: JSONValue = operation == "session.register" ? .object([
             "identity": .object([
-                "client_id": .string(clientID), "embodiment_id": .null,
+                "client_id": .string(clientID), "embodiment_id": embodimentID.map(JSONValue.string) ?? .null,
                 "application_id": .string("home-cortex-apple"),
                 "implementation": .object(["name": .string("home-cortex-apple"), "platform": .string("iOS"), "software_version": .string(version)])
             ]),
-            "manifest": .object(["revision": .integer(1), "capabilities": .array([])])
-        ]) : .object([:])
+            "manifest": manifest ?? .object(["revision": .integer(1), "capabilities": .array([])])
+        ]) : operation == "session.capabilities" ? .object(["manifest": manifest ?? .object(["revision": .integer(1), "capabilities": .array([])])]) : .object([:])
         value = .object([
             "protocol_version": .string("1.0"), "schema_name": .string("hc.request"), "schema_version": .integer(1),
             "message_id": .string(id), "request_id": .string(id), "sent_at": .string(V1Time.format(now)),
             "deadline_at": .string(V1Time.format(deadline)), "operation": .string(operation), "arguments": arguments,
-            "target": .object(["embodiment_id": .null, "session_id": sessionID.map(JSONValue.string) ?? .null])
+            "target": .object(["embodiment_id": embodimentID.map(JSONValue.string) ?? .null, "session_id": sessionID.map(JSONValue.string) ?? .null])
         ])
     }
 }
@@ -58,7 +63,7 @@ struct V1Response {
         _ = try V1Time.parse(o.field("sent_at").string())
         _ = try V1Time.parse(o.field("completed_at").string())
         let target = try o.field("target").object(required: ["embodiment_id", "session_id"])
-        guard try target.field("embodiment_id") == .null,
+        guard try target.field("embodiment_id") == (request.embodimentID.map(JSONValue.string) ?? .null),
               try target.field("session_id") == (request.sessionID.map(JSONValue.string) ?? .null) else { throw ClientFailure.invalidResponse }
         if let extensions = o["extensions"] {
             guard case .object(let fields) = extensions, fields.count <= 32,
@@ -107,9 +112,12 @@ struct SessionView: Sendable {
               leaseExpiresAt.timeIntervalSince(serverTime) <= Double(leaseDurationMS) / 1000 + 0.001 else { throw ClientFailure.invalidResponse }
     }
 
+    func validatePrincipal(_ clientID: String, embodimentID expectedBody: String?, request: V1Request, allowedCapabilities: Set<String> = [], expectedRevision: Int64 = 1) throws {
+        guard self.clientID == clientID, embodimentID == expectedBody, request.embodimentID == expectedBody, Set(effectiveCapabilities).isSubset(of: allowedCapabilities), Set(effectiveCapabilities).count == effectiveCapabilities.count,
+              manifestRevision == expectedRevision, request.sessionID == nil || request.sessionID == sessionID else { throw ClientFailure.invalidResponse }
+    }
     func validateSoftwareClient(_ clientID: String, request: V1Request) throws {
-        guard self.clientID == clientID, embodimentID == nil, effectiveCapabilities.isEmpty,
-              manifestRevision == 1, request.sessionID == nil || request.sessionID == sessionID else { throw ClientFailure.invalidResponse }
+        try validatePrincipal(clientID, embodimentID: nil, request: request)
     }
 }
 
@@ -137,23 +145,22 @@ struct SessionLease: Sendable {
 
 struct EnrollmentBundle: Sendable {
     let clientID: String
+    let embodimentID: String?
+    let visionObserveGranted: Bool
     let certificatePEM: String
     let caChainPEM: String
     let expiresAt: Date
 
-    init(_ value: JSONValue, configuration: ClientConfiguration) throws {
+    init(_ value: JSONValue, configuration: ClientConfiguration, embodimentID: String? = nil, visionObserveGranted: Bool = false) throws {
+        self.embodimentID = embodimentID
+        self.visionObserveGranted = visionObserveGranted
         let o = try value.object(required: ["client_id", "embodiment_id", "certificate_pem", "ca_chain_pem", "server_endpoint", "protocol_versions", "grants", "credential_expires_at"])
         clientID = try o.field("client_id").string()
         guard clientID.range(of: "^client:[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)*$", options: .regularExpression) != nil,
-              try o.field("embodiment_id") == .null,
+              try o.field("embodiment_id") == (embodimentID.map(JSONValue.string) ?? .null),
               URL(string: try o.field("server_endpoint").string())?.matchesV1Origin(configuration.serverEndpoint) == true,
               try o.field("protocol_versions").strings().contains("1.0"),
-              case .array(let grants) = try o.field("grants"), grants.count == 1 else { throw ClientFailure.invalidResponse }
-        for grant in grants {
-            let g = try grant.object(required: ["embodiment_id", "verb", "capability"])
-            guard try g.field("embodiment_id") == .null, try g.field("verb").string() == "session",
-                  try g.field("capability") == .null else { throw ClientFailure.invalidResponse }
-        }
+              try V1Grants.visionObserve(o.field("grants"), body: embodimentID, purpose: embodimentID == nil ? .caller : .device) == visionObserveGranted else { throw ClientFailure.invalidResponse }
         certificatePEM = try o.field("certificate_pem").string()
         caChainPEM = try o.field("ca_chain_pem").string()
         expiresAt = try V1Time.parse(o.field("credential_expires_at").string())

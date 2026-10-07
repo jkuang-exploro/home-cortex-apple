@@ -43,6 +43,7 @@ final class ConnectionController {
     typealias TransportFactory = @MainActor (ClientConfiguration, String, CredentialMetadata?) throws -> any V1Transport
     private(set) var state: ConnectionState = .unconfigured
     private(set) var provisioning: ProvisioningState = .notProvisioned
+    private(set) var maxMediaBytes = VisualEvidence.maxMediaBytes
     private(set) var discovery: DiscoveryState = .unknown
     private(set) var configuration: ClientConfiguration?
     private(set) var credential: CredentialMetadata?
@@ -50,7 +51,10 @@ final class ConnectionController {
     private(set) var trustedCAAvailable = false
     private(set) var lease: SessionLease?
     private(set) var signingIn = false
+    let purpose: CredentialPurpose
     @ObservationIgnored private let store: any CredentialStoring
+    @ObservationIgnored private var inspectionChannel: (String, any InspectionTransport)?
+    @ObservationIgnored private let manifestProvider: @MainActor () -> JSONValue
     @ObservationIgnored private let factory: TransportFactory
     @ObservationIgnored private var worker: Task<Void, Never>?
     @ObservationIgnored private var watchdog: Task<Void, Never>?
@@ -59,14 +63,16 @@ final class ConnectionController {
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private let logger = Logger(subsystem: "HomeCortex", category: "V1Connection")
 
-    init(store: any CredentialStoring = KeychainCredentialStore(), factory: TransportFactory? = nil) {
+    init(store: any CredentialStoring = KeychainCredentialStore(), purpose: CredentialPurpose = .caller, automaticallyConnect: Bool = true, manifestProvider: (@MainActor () -> JSONValue)? = nil, factory: TransportFactory? = nil) {
+        self.purpose = purpose
+        self.manifestProvider = manifestProvider ?? { .object(["revision": .integer(1), "capabilities": .array([])]) }
         self.store = store
         self.factory = factory ?? { config, ca, metadata in
             try URLSessionV1Transport(origin: metadata == nil ? config.bootstrapEndpoint : config.serverEndpoint,
                 hostname: config.serverHostname, trustedCAPEM: ca, identity: metadata.map { try store.identity(for: $0) })
         }
         reload()
-        wantsConnection = credential != nil && state == .disconnected
+        wantsConnection = automaticallyConnect && credential != nil && state == .disconnected
     }
 
     var displayedState: ConnectionState {
@@ -77,7 +83,7 @@ final class ConnectionController {
     var busy: Bool { [.provisioning, .discovering, .authenticating, .registering].contains(state) }
 
     func signIn(email: String, apiKey: String, gateway: (any SoftwareLoginGateway)? = nil) async {
-        guard credential == nil, !busy, !signingIn else { return }
+        guard purpose == .caller, credential == nil, !busy, !signingIn else { return }
         stopTasks()
         let token = generation
         signingIn = true
@@ -103,7 +109,7 @@ final class ConnectionController {
     }
 
     func conversationAccess() throws -> ConversationAccess {
-        guard displayedState == .connected, let credential, let session else { throw ChatFailure.notConnected }
+        guard purpose == .caller, displayedState == .connected, let credential, credential.purpose == .caller, let session else { throw ChatFailure.notConnected }
         return ConversationAccess(clientID: credential.clientID, sessionID: session.sessionID,
             origin: credential.configuration.serverEndpoint,
             transport: try URLSessionConversationTransport(configuration: credential.configuration,
@@ -113,6 +119,7 @@ final class ConnectionController {
     private func reload() {
         do {
             credential = try store.load()
+            if let credential, credential.purpose != purpose { throw ClientFailure.invalidCertificate }
             if let stored = credential, let profile = try? LoginProfile.bundled(),
                let migrated = try? stored.migratedForLAN(profile: profile) {
                 try store.save(migrated)
@@ -171,13 +178,13 @@ final class ConnectionController {
         }
     }
 
-    func provision(invitationData: Data) async {
+    func provision(invitationData: Data, connectAfterProvisioning: Bool = true) async {
         guard canProvision, let config = configuration else { return }
         stopTasks()
         let token = generation
         transition(.provisioning)
         do {
-            let invitation = try ProvisioningInvitation(data: invitationData, configuration: config)
+            let invitation = try ProvisioningInvitation(data: invitationData, configuration: config, purpose: purpose)
             provisioning = .invitationSelected
             let ca = try trustedCA()
             let transport = try factory(config, ca, nil)
@@ -195,10 +202,13 @@ final class ConnectionController {
             ]))
             // The private key stays on the device. The invitation/token are never persisted.
             guard token == generation, foreground else { return }
-            credential = try store.finish(bundle: EnrollmentBundle(response, configuration: config), pending: pending)
+            let bundle = try EnrollmentBundle(response, configuration: config, embodimentID: invitation.embodimentID, visionObserveGranted: invitation.visionObserveGranted)
+            let issued = try store.finish(bundle: bundle, pending: pending)
+            guard issued.purpose == purpose, issued.embodimentID == invitation.embodimentID, (issued.visionObserveGranted == true) == invitation.visionObserveGranted else { throw ClientFailure.invalidCertificate }
+            credential = issued
             provisioning = .provisioned
             transition(.disconnected)
-            connect()
+            if connectAfterProvisioning { connect() }
         } catch {
             guard token == generation else { return }
             let failure = failure(error)
@@ -206,6 +216,23 @@ final class ConnectionController {
             if discovery == .discovering { discovery = failure == .unsupportedProtocol ? .incompatible : .failed }
             transition(.failed(failure))
         }
+    }
+
+    func deviceTransport() throws -> any V1Transport {
+        guard purpose == .device, displayedState == .connected, let credential, credential.purpose == .device else { throw ClientFailure.authenticationRequired }
+        return try factory(credential.configuration, credential.trustedCAPEM, credential)
+    }
+
+    func inspectionTransport() throws -> any InspectionTransport {
+        guard purpose == .device, displayedState == .connected, let credential,
+              let sessionID = session?.sessionID, credential.purpose == .device,
+              credential.visionObserveGranted == true else { throw ClientFailure.authenticationRequired }
+        let key = credential.clientID + "\n" + sessionID
+        if let channel = inspectionChannel, channel.0 == key { return channel.1 }
+        let channel = try URLSessionInspectionTransport(configuration: credential.configuration,
+            ca: credential.trustedCAPEM, identity: store.identity(for: credential))
+        inspectionChannel = (key, channel)
+        return channel
     }
 
     func connect() {
@@ -240,7 +267,7 @@ final class ConnectionController {
                 transition(.discovering)
                 discovery = .discovering
                 let bootstrap = try factory(config, ca, nil)
-                _ = try V1Discovery(await bootstrap.send(path: "/client-interface/v1/discovery", body: nil))
+                maxMediaBytes = try V1Discovery(await bootstrap.send(path: "/client-interface/v1/discovery", body: nil)).maxMediaBytes
                 guard token == generation, !Task.isCancelled else { return }
                 discovery = .compatible
                 transition(.authenticating)
@@ -249,8 +276,10 @@ final class ConnectionController {
                 guard token == generation, !Task.isCancelled else { return }
                 transition(.registering)
                 if pendingRegistration == nil || pendingRegistration!.deadline <= Date() {
-                    pendingRegistration = V1Request(operation: "session.register", clientID: credential.clientID, version: AppMetadata().version)
+                    pendingRegistration = V1Request(operation: "session.register", clientID: credential.clientID, version: AppMetadata().version, embodimentID: credential.embodimentID, manifest: manifestProvider())
                 }
+                var registeredManifest = pendingRegistration!.value
+                if case .object(let r) = registeredManifest, case .object(let a) = r["arguments"], let m = a["manifest"] { registeredManifest = m }
                 var active = try await control(pendingRegistration!, client: client, credential: credential, token: token)
                 pendingRegistration = nil
                 retryDelay = 1
@@ -259,8 +288,15 @@ final class ConnectionController {
                     try await Task.sleep(for: .seconds(max(0.05, lease.heartbeatDelay)))
                     guard token == generation, !Task.isCancelled, self.lease?.valid() == true else { throw ClientFailure.remote(try staleError()) }
                     try credential.validate()
+                    var updatedManifest = manifestProvider()
+                    if case .object(var fields) = updatedManifest { fields["revision"] = .integer(active.manifestRevision); updatedManifest = .object(fields) }
+                    if purpose == .device && updatedManifest != registeredManifest {
+                        if case .object(var fields) = updatedManifest { fields["revision"] = .integer(active.manifestRevision + 1); updatedManifest = .object(fields) }
+                        active = try await control(V1Request(operation: "session.capabilities", sessionID: active.sessionID, clientID: credential.clientID, version: AppMetadata().version, embodimentID: credential.embodimentID, manifest: updatedManifest), client: client, credential: credential, token: token)
+                        registeredManifest = updatedManifest
+                    }
                     active = try await control(V1Request(operation: "session.heartbeat", sessionID: active.sessionID,
-                        clientID: credential.clientID, version: AppMetadata().version), client: client, credential: credential, token: token)
+                        clientID: credential.clientID, version: AppMetadata().version, embodimentID: credential.embodimentID), client: client, credential: credential, token: token)
                 }
             } catch {
                 guard token == generation, !Task.isCancelled else { return }
@@ -290,7 +326,10 @@ final class ConnectionController {
         guard token == generation, !Task.isCancelled else { throw CancellationError() }
         try credential.validate()
         let view = try SessionView(V1Response(response, request: request).result)
-        try view.validateSoftwareClient(credential.clientID, request: request)
+        var expectedRevision = session?.manifestRevision ?? 1
+        if case .object(let r) = request.value, case .object(let a) = r["arguments"], case .object(let m) = a["manifest"], case .integer(let revision) = m["revision"] { expectedRevision = revision }
+        try view.validatePrincipal(credential.clientID, embodimentID: credential.embodimentID, request: request,
+            allowedCapabilities: purpose == .device && credential.visionObserveGranted == true ? ["vision.observe"] : [], expectedRevision: expectedRevision)
         if view.state == .replaced { throw ClientFailure.replaced }
         guard view.state == .active else { throw ClientFailure.remote(try staleError()) }
         let duration = started.duration(to: clock.now).components
@@ -318,7 +357,7 @@ final class ConnectionController {
 
     private func sendDisconnect(_ session: SessionView, credential: CredentialMetadata, transport: any V1Transport) async {
         do {
-            let request = V1Request(operation: "session.disconnect", sessionID: session.sessionID, clientID: credential.clientID, version: AppMetadata().version)
+            let request = V1Request(operation: "session.disconnect", sessionID: session.sessionID, clientID: credential.clientID, version: AppMetadata().version, embodimentID: credential.embodimentID)
             _ = try V1Response(await transport.send(path: "/client-interface/v1/messages", body: request.value), request: request)
         } catch { logger.debug("V1 disconnect could not be acknowledged; local authority cleared") }
     }

@@ -22,7 +22,7 @@ extension CredentialMetadata {
         guard old == known else { return nil }
         return CredentialMetadata(clientID: clientID, keyTag: keyTag, configuration: profile.configuration,
             certificatePEM: certificatePEM, caChainPEM: caChainPEM, trustedCAPEM: trustedCAPEM,
-            expiresAt: expiresAt, authenticationRejected: authenticationRejected)
+            expiresAt: expiresAt, authenticationRejected: authenticationRejected, visionObserveGranted: visionObserveGranted, embodimentID: embodimentID)
     }
 }
 

@@ -2,6 +2,45 @@ import XCTest
 @testable import HomeCortex
 
 final class PhysicalConversationTests: XCTestCase {
+    @MainActor
+    func testRealPhoneEmbodimentSelectionRetainsConversationAccess() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Requires the provisioned physical phone and real backend.")
+        #else
+        let caller = AppRuntime.connection
+        let body = try XCTUnwrap(AppRuntime.embodiment.embodimentID)
+        caller.setForeground(true)
+        if caller.displayedState != .connected { caller.connect() }
+        try await waitUntil(seconds: 45) { caller.displayedState == .connected }
+        let chat = AppRuntime.chat
+        chat.load()
+        try await waitUntil(seconds: 45) { chat.state != .loading }
+        XCTAssertEqual(chat.state, .ready)
+        let id = try XCTUnwrap(chat.conversationID)
+        chat.selectEmbodiment(body)
+        try await waitUntil(seconds: 45) { chat.state != .loading }
+        XCTAssertEqual(chat.state, .ready)
+        XCTAssertEqual(chat.activeEmbodimentID, body)
+        let access = try caller.conversationAccess()
+        // Fresh selection must discover the existing conversation even with a body selected.
+        let selected = try await access.transport.selectOrCreate(sessionID: access.sessionID)
+        XCTAssertEqual(selected.id, id)
+        XCTAssertEqual(selected.active_embodiment_id, body)
+        chat.draft = "我是谁"
+        chat.send()
+        try await waitUntil { chat.state != .sending }
+        XCTAssertEqual(chat.state, .ready)
+        XCTAssertEqual(chat.messages.last?.state, .complete)
+        XCTAssertFalse(try XCTUnwrap(chat.messages.last).content.isEmpty)
+        chat.load()
+        try await waitUntil(seconds: 45) { chat.state != .loading }
+        XCTAssertEqual(chat.state, .ready)
+        XCTAssertEqual(chat.conversationID, id)
+        XCTAssertEqual(chat.activeEmbodimentID, body)
+        print("Physical CALLER selection, discovery, message stream and selected-body history passed.")
+        #endif
+    }
+
     @MainActor private func waitUntil(seconds: Int = 180, _ predicate: () -> Bool) async throws {
         let end = Date().addingTimeInterval(Double(seconds))
         while Date() < end {

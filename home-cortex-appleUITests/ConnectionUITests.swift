@@ -28,6 +28,20 @@ final class ConnectionUITests: XCTestCase {
         if !provision.isHittable { app.swipeUp() }
         XCTAssertTrue(provision.exists)
         XCTAssertFalse(provision.isEnabled)
+        let enable = app.buttons["embodiment.enable"]
+        if !enable.isHittable { app.swipeUp() }
+        XCTAssertTrue(enable.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Not enabled"].exists)
+        XCTAssertFalse(app.buttons["embodiment.disable"].exists)
+        enable.tap()
+        XCTAssertTrue(app.staticTexts["embodiment.setup"].waitForExistence(timeout: 5))
+        app.buttons["embodiment.import"].tap()
+        let files = app.otherElements["Browse View (Picker)"]
+        XCTAssertTrue(files.waitForExistence(timeout: 5), app.debugDescription)
+        app.navigationBars["FullDocumentManagerViewControllerNavigationBar"].buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["embodiment.import"].waitForExistence(timeout: 5))
+        app.navigationBars["Enable Embodiment"].buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["embodiment.enable"].exists)
         app.buttons["Done"].tap()
     }
 }

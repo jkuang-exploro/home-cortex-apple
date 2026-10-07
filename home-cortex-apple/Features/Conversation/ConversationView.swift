@@ -3,8 +3,10 @@ import SwiftUI
 struct ConversationView: View {
     @Bindable var connection: ConnectionController
     @State private var chat: ConversationController
+    let embodiment: EmbodimentController
     @State private var showConnection = false
-    init(connection: ConnectionController, chat: ConversationController) {
+    init(connection: ConnectionController, chat: ConversationController, embodiment: EmbodimentController) {
+        self.embodiment = embodiment
         self.connection = connection
         _chat = State(initialValue: chat)
     }
@@ -20,6 +22,16 @@ struct ConversationView: View {
                             .foregroundStyle(connection.displayedState == .connected ? Color.green : Color.secondary)
                             .accessibilityIdentifier("chat.connection")
                     }.padding()
+                    Menu {
+                        Button("None") { chat.selectEmbodiment(nil) }
+                        if let id = embodiment.embodimentID {
+                            Button("This iPhone") {
+                                Task { if embodiment.vision.configured { await embodiment.vision.requestPermission() }; chat.selectEmbodiment(id) }
+                            }
+                        }
+                    } label: {
+                        Text("Using embodiment: " + (chat.activeEmbodimentID == nil ? "None" : chat.activeEmbodimentID == embodiment.embodimentID ? "This iPhone" : "Another embodiment"))
+                    }.disabled(chat.state != .ready).accessibilityIdentifier("chat.embodiment").padding(.bottom, 8)
                     Divider()
                     ScrollViewReader { proxy in
                         ScrollView {
@@ -81,7 +93,7 @@ struct ConversationView: View {
             .toolbar { Button("Connection", systemImage: "gearshape") { showConnection = true } }
             .sheet(isPresented: $showConnection) {
                 NavigationStack {
-                    ConnectionView(connection: connection)
+                    ConnectionView(connection: connection, embodiment: embodiment)
                         .toolbar { Button("Done") { showConnection = false } }
                 }
             }

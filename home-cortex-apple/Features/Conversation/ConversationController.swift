@@ -10,6 +10,7 @@ enum ConversationState: Equatable {
 final class ConversationController {
     private(set) var state: ConversationState = .idle
     private(set) var messages: [ChatMessage] = []
+    private(set) var activeEmbodimentID: String?
     private(set) var conversationID: String?
     var draft = ""
     @ObservationIgnored private let access: @MainActor () throws -> ConversationAccess
@@ -45,7 +46,7 @@ final class ConversationController {
         generation += 1
         let token = generation
         if ownerKey != context.selectionKey {
-            messages = []; conversationID = nil; ownerKey = context.selectionKey
+            messages = []; conversationID = nil; activeEmbodimentID = nil; ownerKey = context.selectionKey
         }
         state = .loading
         task = Task { [weak self] in
@@ -58,6 +59,7 @@ final class ConversationController {
                 } else { document = try await context.transport.selectOrCreate(sessionID: context.sessionID) }
                 try Task.checkCancellation()
                 guard token == generation else { return }
+                activeEmbodimentID = document.active_embodiment_id
                 conversationID = document.id
                 defaults.set(document.id, forKey: context.selectionKey)
                 let unsent = messages.filter {
@@ -69,6 +71,27 @@ final class ConversationController {
             } catch {
                 guard token == generation else { return }
                 state = .failed(ChatFailure.map(error))
+            }
+            if token == generation { task = nil }
+        }
+    }
+    func selectEmbodiment(_ body: String?) {
+        guard state == .ready, let id = conversationID else { return }
+        let context: ConversationAccess
+        do { context = try access() } catch { state = .failed(ChatFailure.map(error)); return }
+        generation += 1
+        let token = generation
+        state = .loading
+        task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let document = try await context.transport.setActive(id: id, embodimentID: body, sessionID: context.sessionID)
+                try Task.checkCancellation()
+                guard token == generation, document.id == id, document.active_embodiment_id == body else { throw ChatFailure.invalidResponse }
+                activeEmbodimentID = document.active_embodiment_id
+                state = .ready
+            } catch {
+                if token == generation { state = .failed(ChatFailure.map(error)) }
             }
             if token == generation { task = nil }
         }

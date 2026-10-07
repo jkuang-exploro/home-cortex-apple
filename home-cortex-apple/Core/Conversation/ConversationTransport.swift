@@ -1,10 +1,14 @@
 import Foundation
 
 protocol ConversationTransport: Sendable {
+    func setActive(id: String, embodimentID: String?, sessionID: String) async throws -> ConversationDocument
     func history(id: String, sessionID: String) async throws -> ConversationDocument
     func selectOrCreate(sessionID: String) async throws -> ConversationDocument
     func stream(id: String, content: String, sessionID: String,
                 receive: @escaping @Sendable (ConversationEvent) async throws -> Void) async throws
+}
+extension ConversationTransport {
+    func setActive(id: String, embodimentID: String?, sessionID: String) async throws -> ConversationDocument { throw ChatFailure.unavailable }
 }
 struct ConversationAccess: Sendable {
     let clientID: String
@@ -36,7 +40,7 @@ final class URLSessionConversationTransport: ConversationTransport, @unchecked S
     }
     deinit { session.invalidateAndCancel() }
     private func request(_ path: String, sessionID: String, body: Data? = nil) throws -> URLRequest {
-        guard path == "/conversations" || path.range(of: "^/conversations/[A-Za-z0-9_-]+(/messages)?$", options: .regularExpression) != nil,
+        guard path == "/conversations" || path.range(of: "^/conversations/[A-Za-z0-9_-]+(/messages|/active-embodiment)?$", options: .regularExpression) != nil,
               let url = URL(string: path, relativeTo: origin)?.absoluteURL,
               url.host == origin.host, url.port == origin.port, !sessionID.isEmpty else { throw ChatFailure.invalidResponse }
         var request = URLRequest(url: url)
@@ -70,6 +74,15 @@ final class URLSessionConversationTransport: ConversationTransport, @unchecked S
         }
         return data
     }
+    func setActive(id: String, embodimentID: String?, sessionID: String) async throws -> ConversationDocument {
+        guard ConversationDocument.validID(id) else { throw ChatFailure.invalidResponse }
+        let body = try JSONEncoder().encode(JSONValue.object(["active_embodiment_id": embodimentID.map(JSONValue.string) ?? .null]))
+        var request = try request("/conversations/" + id + "/active-embodiment", sessionID: sessionID, body: body)
+        request.httpMethod = "PATCH"
+        let document = try ConversationDocument.decode(await json(request))
+        guard document.id == id, document.active_embodiment_id == embodimentID else { throw ChatFailure.invalidResponse }
+        return document
+    }
     func history(id: String, sessionID: String) async throws -> ConversationDocument {
         guard ConversationDocument.validID(id) else { throw ChatFailure.invalidResponse }
         let value = try ConversationDocument.decode(await json(request("/conversations/" + id, sessionID: sessionID)))
@@ -81,7 +94,7 @@ final class URLSessionConversationTransport: ConversationTransport, @unchecked S
         struct Listing: Decodable { let object: String; let data: [Summary] }
         let list = try JSONDecoder().decode(Listing.self, from: await json(request("/conversations", sessionID: sessionID)))
         guard list.object == "list" else { throw ChatFailure.invalidResponse }
-        if let latest = list.data.first(where: { $0.agent_id == "steward" && $0.active_embodiment_id == nil }) {
+        if let latest = list.data.first(where: { $0.agent_id == "steward" }) {
             return try await history(id: latest.id, sessionID: sessionID)
         }
         let body = try JSONEncoder().encode(["model": "steward", "language": "zh"])

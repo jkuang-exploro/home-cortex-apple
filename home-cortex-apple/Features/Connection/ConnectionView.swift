@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ConnectionView: View {
     @Bindable var connection: ConnectionController
+    var embodiment: EmbodimentController? = nil
     @State private var importing: ImportKind?
     @State private var showImporter = false
     @State private var confirmForget = false
@@ -41,7 +42,7 @@ struct ConnectionView: View {
                         detail("Provisioning", connection.provisioning.label, id: "connection.provisioning")
                         detail("Role", "Software client", id: "connection.role")
                         detail("Session", connection.displayedState == .connected ? "Active" : "Not active", id: "connection.session")
-                        detail("Embodiment", "Not enabled", id: "connection.embodiment")
+                        detail("CALLER embodiment", "Not enabled", id: "connection.embodiment")
                     }
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -82,6 +83,10 @@ struct ConnectionView: View {
                             Spacer()
                             Button("Server settings") { beginImport(.configuration) }.disabled(connection.busy)
                         }.font(.footnote)
+                    }
+                    if let embodiment {
+                        Divider()
+                        EmbodimentView(embodiment: embodiment)
                     }
                     Text(metadata.versionDescription).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                         .accessibilityIdentifier("connection.version")
