@@ -4,6 +4,13 @@ import UIKit
 
 protocol InspectionTransport: Sendable {
     func send(bodyID: String, sessionID: String, frame: JSONValue?) async throws -> JSONValue
+    func sendOrientation(bodyID: String, sessionID: String, diagnostic: JSONValue?) async throws -> JSONValue
+    func sendLocalization(bodyID: String, sessionID: String, diagnostic: JSONValue?) async throws -> JSONValue
+}
+
+extension InspectionTransport {
+    func sendLocalization(bodyID: String, sessionID: String, diagnostic: JSONValue?) async throws -> JSONValue { throw ClientFailure.configuration }
+    func sendOrientation(bodyID: String, sessionID: String, diagnostic: JSONValue?) async throws -> JSONValue { throw ClientFailure.configuration }
 }
 
 final class URLSessionInspectionTransport: InspectionTransport, @unchecked Sendable {
@@ -26,8 +33,17 @@ final class URLSessionInspectionTransport: InspectionTransport, @unchecked Senda
     }
     deinit { session.invalidateAndCancel() }
     func send(bodyID: String, sessionID: String, frame: JSONValue?) async throws -> JSONValue {
+        try await sendChannel(bodyID: bodyID, sessionID: sessionID, frame: frame, channel: "camera")
+    }
+    func sendOrientation(bodyID: String, sessionID: String, diagnostic: JSONValue?) async throws -> JSONValue {
+        try await sendChannel(bodyID: bodyID, sessionID: sessionID, frame: diagnostic, channel: "orientation")
+    }
+    func sendLocalization(bodyID: String, sessionID: String, diagnostic: JSONValue?) async throws -> JSONValue {
+        try await sendChannel(bodyID: bodyID, sessionID: sessionID, frame: diagnostic, channel: "localization")
+    }
+    private func sendChannel(bodyID: String, sessionID: String, frame: JSONValue?, channel: String) async throws -> JSONValue {
         guard bodyID.range(of: "^embodiment:[A-Za-z0-9_-]+$", options: .regularExpression) != nil else { throw ClientFailure.configuration }
-        let path = "/inspection/v1/device/" + bodyID + (frame == nil ? "/lease" : "/frames")
+        let path = "/inspection/v1/device/" + bodyID + (frame == nil ? (channel == "camera" ? "/lease" : "/lease?channel=" + channel) : (channel == "camera" ? "/frames" : "/" + channel))
         guard let url = URL(string: path, relativeTo: origin)?.absoluteURL, url.host == origin.host, url.port == origin.port else { throw ClientFailure.configuration }
         var request = URLRequest(url: url)
         request.httpMethod = frame == nil ? "GET" : "POST"

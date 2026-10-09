@@ -5,6 +5,7 @@ struct ConversationView: View {
     @State private var chat: ConversationController
     let embodiment: EmbodimentController
     @State private var showConnection = false
+    @State private var showEmbodiment = false
     init(connection: ConnectionController, chat: ConversationController, embodiment: EmbodimentController) {
         self.embodiment = embodiment
         self.connection = connection
@@ -90,7 +91,17 @@ struct ConversationView: View {
                 .onChange(of: connection.displayedState) { _, state in chat.connectionChanged(connected: state == .connected) }
             }
             .navigationTitle("Home Cortex").navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("Connection", systemImage: "gearshape") { showConnection = true } }
+            .toolbar {
+                Button("Embodiment", systemImage: "iphone") { showEmbodiment = true }
+                    .accessibilityIdentifier("chat.manage-embodiment")
+                Button("Connection", systemImage: "gearshape") { showConnection = true }
+            }
+            .sheet(isPresented: $showEmbodiment) {
+                NavigationStack {
+                    ScrollView { EmbodimentView(embodiment: embodiment, caller: connection) }
+                        .toolbar { Button("Done") { showEmbodiment = false } }
+                }
+            }
             .sheet(isPresented: $showConnection) {
                 NavigationStack {
                     ConnectionView(connection: connection, embodiment: embodiment)

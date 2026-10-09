@@ -218,15 +218,27 @@ final class ConnectionController {
         }
     }
 
+    func embodimentSetupAccess() throws -> (EmbodimentSetupTransport, String, CredentialMetadata) {
+        guard purpose == .caller, displayedState == .connected, let credential, let session else { throw ChatFailure.notConnected }
+        return (try EmbodimentSetupTransport(configuration: credential.configuration, ca: credential.trustedCAPEM,
+                    identity: store.identity(for: credential)), session.sessionID, credential)
+    }
+    func updateDeviceCameraGrant(_ enabled: Bool) throws {
+        guard purpose == .device, var metadata = credential else { throw ClientFailure.invalidCertificate }
+        metadata.visionObserveGranted = enabled
+        try store.save(metadata)
+        credential = metadata
+    }
+
     func deviceTransport() throws -> any V1Transport {
         guard purpose == .device, displayedState == .connected, let credential, credential.purpose == .device else { throw ClientFailure.authenticationRequired }
         return try factory(credential.configuration, credential.trustedCAPEM, credential)
     }
 
-    func inspectionTransport() throws -> any InspectionTransport {
+    func inspectionTransport(requireCamera: Bool = true) throws -> any InspectionTransport {
         guard purpose == .device, displayedState == .connected, let credential,
               let sessionID = session?.sessionID, credential.purpose == .device,
-              credential.visionObserveGranted == true else { throw ClientFailure.authenticationRequired }
+              (!requireCamera || credential.visionObserveGranted == true) else { throw ClientFailure.authenticationRequired }
         let key = credential.clientID + "\n" + sessionID
         if let channel = inspectionChannel, channel.0 == key { return channel.1 }
         let channel = try URLSessionInspectionTransport(configuration: credential.configuration,

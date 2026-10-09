@@ -31,17 +31,9 @@ final class ConnectionUITests: XCTestCase {
         let enable = app.buttons["embodiment.enable"]
         if !enable.isHittable { app.swipeUp() }
         XCTAssertTrue(enable.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Not enabled"].exists)
-        XCTAssertFalse(app.buttons["embodiment.disable"].exists)
-        enable.tap()
-        XCTAssertTrue(app.staticTexts["embodiment.setup"].waitForExistence(timeout: 5))
-        app.buttons["embodiment.import"].tap()
-        let files = app.otherElements["Browse View (Picker)"]
-        XCTAssertTrue(files.waitForExistence(timeout: 5), app.debugDescription)
-        app.navigationBars["FullDocumentManagerViewControllerNavigationBar"].buttons["Cancel"].tap()
-        XCTAssertTrue(app.buttons["embodiment.import"].waitForExistence(timeout: 5))
-        app.navigationBars["Enable Embodiment"].buttons["Cancel"].tap()
-        XCTAssertTrue(app.buttons["embodiment.enable"].exists)
+        XCTAssertFalse(enable.isEnabled)
+        XCTAssertTrue(app.staticTexts["Use This iPhone as an Embodiment"].exists)
+        XCTAssertFalse(app.buttons["Import DEVICE invitation"].isHittable)
         app.buttons["Done"].tap()
     }
 }

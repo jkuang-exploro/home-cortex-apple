@@ -5,6 +5,88 @@
 	"objectVersion" = "56";
 	"archiveVersion" = "1";
 	"objects" = {
+		"CD787BABA4B740D8B8640909" = { "isa" = "PBXFileReference"; "path" = "SpatialAwarenessView.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
+		"644FEBA5199A4EBE8E437879" = { "isa" = "PBXBuildFile"; "fileRef" = "CD787BABA4B740D8B8640909"; };
+		"CFD98D17E394474CA7CA36B7" = { "isa" = "PBXFileReference"; "path" = "SpatialCalibration.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
+		"64EF0B8FF8B34A2EB8C37C63" = { "isa" = "PBXBuildFile"; "fileRef" = "CFD98D17E394474CA7CA36B7"; };
+		"9E40FB42C5E64CC0A6B545BD" = { "isa" = "PBXFileReference"; "path" = "SpatialLocalizationTests.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
+		"3451146EA57D4CE78C0DE3E8" = { "isa" = "PBXBuildFile"; "fileRef" = "9E40FB42C5E64CC0A6B545BD"; };
+		"15C075E052B949CE90867C80" = { "isa" = "PBXFileReference"; "path" = "LocalizationRuntime.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
+		"DD750DAAC900422BB4E2C78E" = { "isa" = "PBXBuildFile"; "fileRef" = "15C075E052B949CE90867C80"; };
+		"CBFD05231A0043D8BFC0E30E" = { "isa" = "PBXFileReference"; "path" = "ARLocalTracking.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
+		"C2013A07CE6040AFB1B58164" = { "isa" = "PBXBuildFile"; "fileRef" = "CBFD05231A0043D8BFC0E30E"; };
+		"AD0987A1C2B649A48447C89F" = { "isa" = "PBXFileReference"; "path" = "SpatialLocalization.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
+		"BD9B7C4887914D47ABB1F9C1" = { "isa" = "PBXBuildFile"; "fileRef" = "AD0987A1C2B649A48447C89F"; };
+		"5E8C9FB3138C4B5187DC1290" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "636A80A2D479478AADFC727D";
+		};
+		"8BEBB4E9615E48F18F45EA02" = {
+			"path" = "PhysicalSelfProvisioningTests.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"9EC3C8925CC54FA4993F1403" = {
+			"path" = "EmbodimentSetupTests.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"D1B7841EF8C54931B95941CC" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "8BEBB4E9615E48F18F45EA02";
+		};
+		"FAFED0E6BCE344FA8DBF38EC" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "8193E231A99F4D7FAE541329";
+		};
+		"636A80A2D479478AADFC727D" = {
+			"path" = "MotionOrientationTests.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"7DD5064F09B5480A9BDA3DF0" = {
+			"path" = "EmbodimentSetup.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"8AFDB9CB032D4182B1426C95" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "7DD5064F09B5480A9BDA3DF0";
+		};
+		"3967C625C2EF481BB28CAEA8" = {
+			"path" = "MotionOrientation.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"576AB157DBBA49DA8BB95B4C" = {
+			"path" = "PhysicalEmbodimentUITests.swift";
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"8193E231A99F4D7FAE541329" = {
+			"isa" = "PBXFileReference";
+			"path" = "PhysicalMotionTests.swift";
+			"lastKnownFileType" = "sourcecode.swift";
+			"sourceTree" = "<group>";
+		};
+		"F10AA9D389A94C8793530B8B" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "576AB157DBBA49DA8BB95B4C";
+		};
+		"A14F1B11EEDF41BBB57FBF91" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "3967C625C2EF481BB28CAEA8";
+		};
+		"BFA58B6FC9FF44D299696EB2" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "9EC3C8925CC54FA4993F1403";
+		};
 		"7A7B8562AB4CFD90760E9EE8" = {
 			"isa" = "PBXBuildFile";
 			"fileRef" = "9C559C2510DECE5D063FDD51";
@@ -212,6 +294,7 @@
 				"PRODUCT_BUNDLE_IDENTIFIER" = "$(HOME_CORTEX_BUNDLE_IDENTIFIER)";
 				"SUPPORTS_MACCATALYST" = "NO";
 				"INFOPLIST_KEY_LSApplicationCategoryType" = "public.app-category.utilities";
+				"INFOPLIST_KEY_NSMotionUsageDescription" = "Measure local iPhone attitude while Motion & Orientation is enabled and Home Cortex is open.";
 				"INFOPLIST_KEY_NSCameraUsageDescription" = "Capture a fresh photo when Home Cortex requests vision from this iPhone embodiment.";
 			};
 			"name" = "Debug";
@@ -239,6 +322,7 @@
 			"path" = "home-cortex-appleUITests";
 			"isa" = "PBXGroup";
 			"children" = (
+				"576AB157DBBA49DA8BB95B4C",
 				"449E4684469A6CBF0C22DF65",
 				"B2C000000000000000000001",
 			);
@@ -390,6 +474,13 @@
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"644FEBA5199A4EBE8E437879",
+				"64EF0B8FF8B34A2EB8C37C63",
+				"DD750DAAC900422BB4E2C78E",
+				"C2013A07CE6040AFB1B58164",
+				"BD9B7C4887914D47ABB1F9C1",
+				"8AFDB9CB032D4182B1426C95",
+				"A14F1B11EEDF41BBB57FBF91",
 				"77ED051E77A22FD94E06D4D0",
 				"04EE22AA9C12E0F8077B1748",
 				"2BC1F8F22FCF033E6E36B199",
@@ -507,6 +598,11 @@
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"3451146EA57D4CE78C0DE3E8",
+				"BFA58B6FC9FF44D299696EB2",
+				"D1B7841EF8C54931B95941CC",
+				"5E8C9FB3138C4B5187DC1290",
+				"FAFED0E6BCE344FA8DBF38EC",
 				"747D268A8F3647E03CE51F06",
 				"37DB2A7BFA9347AF1E9FF78F",
 				"1E014310AC076AEC0EE8886E",
@@ -547,6 +643,7 @@
 			"isa" = "PBXGroup";
 			"sourceTree" = "<group>";
 			"children" = (
+				"CD787BABA4B740D8B8640909",
 				"C1AE28074D5A9C0476932701",
 				"848ADD0B2DE6BF190176D1EF",
 				"66AB31108171C353FF9FE037",
@@ -657,6 +754,7 @@
 				"PRODUCT_BUNDLE_IDENTIFIER" = "$(HOME_CORTEX_BUNDLE_IDENTIFIER)";
 				"SUPPORTS_MACCATALYST" = "NO";
 				"INFOPLIST_KEY_LSApplicationCategoryType" = "public.app-category.utilities";
+				"INFOPLIST_KEY_NSMotionUsageDescription" = "Measure local iPhone attitude while Motion & Orientation is enabled and Home Cortex is open.";
 				"INFOPLIST_KEY_NSCameraUsageDescription" = "Capture a fresh photo when Home Cortex requests vision from this iPhone embodiment.";
 			};
 			"name" = "Release";
@@ -681,6 +779,7 @@
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"F10AA9D389A94C8793530B8B",
 				"A201DB8141AD7B93D7C2A1D5",
 				"B2C000000000000000000002",
 			);
@@ -787,6 +886,11 @@
 			"path" = "home-cortex-appleTests";
 			"isa" = "PBXGroup";
 			"children" = (
+				"9E40FB42C5E64CC0A6B545BD",
+				"9EC3C8925CC54FA4993F1403",
+				"8BEBB4E9615E48F18F45EA02",
+				"636A80A2D479478AADFC727D",
+				"8193E231A99F4D7FAE541329",
 				"6E3774B14135B768B57839EA",
 				"64CC064D40A0B08967211DF4",
 				"BD5CBD8A72710A036235120B",
@@ -865,6 +969,12 @@
 			"isa" = "PBXGroup";
 			"sourceTree" = "<group>";
 			"children" = (
+				"CFD98D17E394474CA7CA36B7",
+				"15C075E052B949CE90867C80",
+				"CBFD05231A0043D8BFC0E30E",
+				"AD0987A1C2B649A48447C89F",
+				"7DD5064F09B5480A9BDA3DF0",
+				"3967C625C2EF481BB28CAEA8",
 				"6B6500A5D9B286FFF748CA98",
 				"32801695E1232A9456B432E5",
 				"66012D85BF1CA2DD2CB50596",

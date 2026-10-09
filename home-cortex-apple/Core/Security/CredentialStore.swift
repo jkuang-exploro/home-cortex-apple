@@ -89,6 +89,13 @@ final class KeychainCredentialStore: DeviceCredentialStoring {
         // Preserve the original CALLER namespace. DEVICE always gets its own namespace.
         self.service = purpose == .device ? service + ".device" : service
     }
+    /// Only after deliberate server-side retirement; ordinary runtime disable never calls this.
+    func removeEmbodiment() throws {
+        guard purpose == .device else { throw ClientFailure.configuration }
+        try forget()
+        try delete("retained-body")
+        try delete("runtime-enabled")
+    }
     func retainedEmbodiment() throws -> String? { try read("retained-body", as: String.self) ?? load()?.embodimentID }
     func storeRetainedEmbodiment(_ id: String) throws {
         guard purpose == .device, id.range(of: "^embodiment:[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)*$", options: .regularExpression) != nil,

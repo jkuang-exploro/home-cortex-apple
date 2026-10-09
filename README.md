@@ -41,7 +41,40 @@ Existing credentials using `home-cortex-0` automatically migrate to the LAN endp
 
 Discovery uses `GET /client-interface/v1/discovery` on **8444** before enrollment and requires protocol `1.0` / envelope schema `1`. Compatible discovery alone never means Connected. Authenticated discovery/session messages use **8443**, which requires mTLS. The deployed proxy deliberately rejects enrollment on 8443.
 
-## Advanced operator invitation and enrollment
+## Use this iPhone as an embodiment
+
+Open **Home Cortex → Embodiment → Continue → Choose Agent → Choose Sensors → Confirm**.
+The server supplies the agents and sensors you are allowed to configure. Camera is
+currently the only implemented sensor. If selected, iPhone asks for camera access
+after confirmation. Setup continues when access is denied; Camera remains selected
+and shows unavailable until permission is restored in iPhone Settings.
+
+The app enrolls automatically with a separate phone-held DEVICE key and certificate.
+Chat continues through its existing CALLER identity. No Files, invitation JSON,
+AirDrop, SSH or certificate handling is needed. **Online** means the DEVICE has an
+ACTIVE session with a valid lease. Failed or interrupted setup offers **Resume
+Setup / Retry Saved Setup**, reusing the saved setup ID and exact Keychain CSR.
+Start a new attempt only after the server confirms the previous pending attempt
+expired; an issued or committed attempt must be recovered instead.
+
+After setup, **Embodiment Enabled** stops/resumes the physical runtime while retaining
+the phone's identity, agent association and sensor choices. **Camera** updates the
+backend authority/configuration without re-enrollment. OS permission is a separate
+layer: disabling camera permission in Settings does not turn the Home Cortex
+preference off. Existing manually provisioned DEVICE credentials open this same
+production screen; an operator-verified backend ownership mapping permits ongoing
+management without creating a duplicate body.
+
+The ordinary UI hides manual invitation import. Debug builds retain it inside
+**Developer / Recovery Provisioning**; the instructions below are advanced recovery
+only. A deliberate server retirement API exists, but a normal-user removal UI is
+not yet provided. Enabled OFF never retires or revokes anything.
+
+Deployment/policy/API details are in the backend's
+`docs/embodiment-self-provisioning.md`. Acceptance evidence is in
+[the development report](.llm/epic3b-production-embodiment-provisioning.md).
+
+## Developer / Recovery Provisioning — CALLER
 
 The provisioner must be authorized for **`embodiment_id: null`**. Epic 3B.1a added that specific provisioning grant to the deployed existing operator, preserving its identity, certificate, and previous MacBook grant. Future deployments can use the backend's `grant-software-provisioning` offline maintenance command; stop the API, take its protected backup, apply the grant, and restart. Do not grant the phone an embodiment or vision permissions to bypass a restriction.
 
@@ -193,7 +226,7 @@ An unsent local failure may expose **Retry**; it has not reached the backend.
 
 Development and physical acceptance evidence: [.llm/epic3b-chat.md](.llm/epic3b-chat.md).
 
-## Optional iPhone embodiment (Epic 3B.3a)
+## Developer / Recovery Provisioning — DEVICE
 
 Chat retains its original **CALLER / null embodiment** credential. The optional
 physical role uses **DEVICE / one persistent embodiment**, its own Secure Enclave
@@ -204,10 +237,9 @@ routes. Session-only DEVICE credentials advertise an empty manifest. The explici
 vision upgrade below adds only `vision.observe`; no microphone, telemetry,
 location, pose, or actuator capability is implemented.
 
-Open the gear menu and find **This iPhone**. Initially it shows **Not enabled**;
-installation, web sign-in, and app launch do not enable it. Tap **Enable as
-Embodiment**, confirm **Import DEVICE invitation**, and choose the operator-issued
-JSON in Files. The bundled household CA/LAN profile handles trust. The phone
+In a Debug build, open **Embodiment → Developer / Recovery Provisioning →
+Import DEVICE invitation** and choose the operator-issued JSON in Files.
+Installation, sign-in and app launch do not enable a new embodiment automatically. The bundled household CA/LAN profile handles trust. The phone
 creates a new independent key/CSR and uses the existing V1 enrollment endpoint.
 A CALLER invitation, null-body DEVICE, unrelated capability grants, or mismatched
 origin is rejected before DEVICE key generation. CALLER credentials are never converted.
@@ -218,8 +250,9 @@ The public source profile is `.local/provisioning/iphone-embodiment.json`, also
 retained on the operator host. **Keep this profile when regenerating invitations**;
 reuse the same ID instead of creating a body on every reconnect. Current geometry
 is a nominal box in meters: thickness (x) 0.010, width (y) 0.075, height (z) 0.150,
-center (0,0,0). Intrinsic +x is outward through the display, +y toward the left
-edge, +z toward the top edge; forward×left=up. This establishes only a body frame,
+center (0,0,0). Intrinsic +x is outward through the display, +y toward the viewer-right
+edge, +z toward the top edge; +x×+y=+z. The former viewer-left description
+was left-handed and has been corrected; the numeric local_frame basis remains unchanged. This establishes only a body frame,
 not a global pose or measured localization. Adjust the operator-owned geometry
 if a measured bounding box is required later.
 
@@ -287,7 +320,7 @@ Validation and physical acceptance status:
 [.llm/epic3b-iphone-embodiment-identity.md](.llm/epic3b-iphone-embodiment-identity.md).
 
 
-## iPhone vision.observe (Epic 3B.3b)
+## Developer / Recovery Provisioning — Camera upgrade
 
 Vision uses only the DEVICE principal. The original CALLER email/API-key sign-in,
 key/certificate and chat remain independent. Existing session-only DEVICE
@@ -301,11 +334,11 @@ credentials keep their original authority until you explicitly import an upgrade
 2. AirDrop `.local/provisioning/iphone-vision-invitation.json` to iPhone Files.
    Invitations expire after ten minutes. Remove expired/consumed Mac and operator
    invitation copies before regenerating; retain `iphone-embodiment.json`.
-3. Open **gear → This iPhone → Upgrade Vision Access → Import DEVICE invitation**.
+3. In a Debug build, open **Embodiment → Developer / Recovery Provisioning → Import DEVICE invitation**.
    The replacement must name the same body. The app generates a new DEVICE key
    and certificate. It retains the body ID independently in DEVICE Keychain so a
    failed upgrade can be retried; CALLER credentials remain unchanged.
-4. Tap **Enable Camera** and grant native camera permission. It is also requested
+4. Turn **Camera** on and grant native camera permission. It is also requested
    when explicitly choosing this upgraded phone in the chat embodiment selector.
    Launching the app, opening chat, or connecting CALLER never requests it.
 5. In chat choose **Using embodiment → This iPhone**, point the rear camera at
@@ -348,3 +381,15 @@ Shared Python/Swift Unicode and ASCII evidence vectors, an actual Swift-produced
 synthetic wire artifact verified by the backend, and MacBook protocol/evidence
 tests establish conformance. Physical checks and camera/upload timing evidence
 are recorded separately in [.llm/epic3b-iphone-vision-observe.md](.llm/epic3b-iphone-vision-observe.md).
+
+
+### Motion and orientation foundation
+
+“Motion & Orientation” enables foreground Core Motion device attitude and its
+local inspection diagnostic, independently of the camera. Home Cortex authorizes
+`orientation.local` on the DEVICE credential registry; it is not a V1 capability
+or a household orientation grant. Local motion never publishes
+`telemetry.orientation` and has no space or invented p95.
+
+Body axes, quaternion math, camera extrinsic limits and Epic 1.2 prerequisites
+are defined in [the orientation foundation](docs/orientation-foundation.md).

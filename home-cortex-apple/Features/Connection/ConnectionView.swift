@@ -86,7 +86,7 @@ struct ConnectionView: View {
                     }
                     if let embodiment {
                         Divider()
-                        EmbodimentView(embodiment: embodiment)
+                        EmbodimentView(embodiment: embodiment, caller: connection)
                     }
                     Text(metadata.versionDescription).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                         .accessibilityIdentifier("connection.version")

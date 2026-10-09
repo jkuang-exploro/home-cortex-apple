@@ -25,7 +25,11 @@ struct InspectionImage: Sendable {
 
 /// One camera session. Canonical photo exposures never reuse inspection samples.
 @MainActor final class NativeStillImageCapture: StillImageCapture, InspectionCamera {
+    let tracking = ARLocalTracking()
     private let engine = CameraEngine()
+    private var trackingDesired = false
+    private var ownershipGeneration = 0
+    private var arPreview: Task<Void, Never>?
     private var photographing = false
     private var unavailableUntil: Date?
     static func permissionFailure(_ status: AVAuthorizationStatus) -> VisionFailure? {
@@ -61,6 +65,25 @@ struct InspectionImage: Sendable {
         photographing = true
         defer { photographing = false }
         do {
+            if trackingDesired {
+                do { return try await tracking.freshImage(deadline: deadline) }
+                catch {
+                    try Task.checkCancellation()
+                    guard Date() < deadline else { throw VisionFailure.timeout }
+                    // A real new exposure has priority. Any camera handoff starts a new tracking world.
+                    tracking.stop()
+                    do {
+                        let image = try await engine.photo(deadline: deadline)
+                        await engine.releaseCamera()
+                        if trackingDesired { tracking.start(resetReason: "Fresh evidence required camera handoff; new unanchored world") }
+                        return image
+                    } catch {
+                        await engine.releaseCamera()
+                        if trackingDesired { tracking.start(resetReason: "Evidence camera handoff failed; new unanchored world") }
+                        throw error
+                    }
+                }
+            }
             return try await withTaskCancellationHandler {
                 try await engine.photo(deadline: deadline)
             } onCancel: { self.engine.cancelPhoto() }
@@ -69,12 +92,36 @@ struct InspectionImage: Sendable {
             throw error
         }
     }
-    func cancel() { engine.cancelPhoto() }
+    func cancel() { engine.cancelPhoto(); tracking.cancelCapture() }
+    func useTracking(_ enabled: Bool) async {
+        ownershipGeneration += 1
+        let token = ownershipGeneration
+        trackingDesired = enabled
+        if !enabled { tracking.stop(); arPreview?.cancel(); arPreview = nil; return }
+        guard availability == nil else { tracking.stop(); return }
+        await engine.releaseCamera()
+        guard token == ownershipGeneration, trackingDesired else { return }
+        tracking.start()
+    }
+    func stopTracking() {
+        ownershipGeneration += 1; trackingDesired = false; tracking.stop(); arPreview?.cancel(); arPreview = nil
+    }
     func startPreview(fps: Int, deliver: @escaping @Sendable (InspectionImage) -> Void) async throws {
         if let availability { throw availability }
+        if trackingDesired {
+            guard arPreview == nil else { return }
+            arPreview = Task { [weak self] in
+                while !Task.isCancelled {
+                    guard let self, trackingDesired else { return }
+                    if let image = try? await tracking.previewImage(), !Task.isCancelled { deliver(image) }
+                    do { try await Task.sleep(for: .milliseconds(1000 / max(1, min(5, fps)))) } catch { return }
+                }
+            }
+            return
+        }
         try await engine.preview(fps: fps, deliver: deliver)
     }
-    func stopPreview() { engine.stopPreview() }
+    func stopPreview() { arPreview?.cancel(); arPreview = nil; engine.stopPreview() }
 }
 
 /// Mutable AVFoundation state and encoding run on one bounded, serial camera queue.
@@ -161,6 +208,16 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         }
     }
     func cancelPhoto() { queue.async { self.finishPhoto(.failure(CancellationError())) } }
+    func releaseCamera() async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.previewSink = nil
+                self.finishPhoto(.failure(CancellationError()))
+                if self.session.isRunning { self.session.stopRunning() }
+                continuation.resume()
+            }
+        }
+    }
     func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor settings: AVCaptureResolvedPhotoSettings) {
         let time = Date(); let id = settings.uniqueID
         queue.async { if self.photoID == id { self.captureTime = time } }
