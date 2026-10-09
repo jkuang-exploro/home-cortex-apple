@@ -4,6 +4,40 @@ import simd
 @testable import HomeCortex
 
 final class PhysicalMotionTests: XCTestCase {
+    @MainActor func testPhysicalEmbodimentConnectionRecovery() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Requires the retained physical iPhone and production backend")
+        #else
+        let previousIdleTimer = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer { UIApplication.shared.isIdleTimerDisabled = previousIdleTimer }
+        let caller = AppRuntime.connection, phone = AppRuntime.embodiment
+        let retainedID = try XCTUnwrap(phone.embodimentID)
+        caller.setForeground(true); caller.connect(); phone.setForeground(true); phone.enableRuntime()
+        try await wait { caller.displayedState == .connected && phone.isOnline }
+        await phone.refreshConfiguration(caller: caller)
+        XCTAssertNil(phone.setupMessage)
+        let configuration = try XCTUnwrap(phone.serverConfiguration)
+        XCTAssertEqual(configuration.embodiment_id, retainedID)
+        XCTAssertTrue(configuration.cameraEnabled)
+        let (http, session, _) = try caller.embodimentSetupAccess()
+        let requested = Date()
+        let response = try JSONValue.decode(await http.send("/inspection/v1/embodiments/" + retainedID + "/evidence",
+            sessionID: session, method: "POST", body: Data("{}".utf8))).inspectionFields(required: ["evidence_id", "captured_at", "embodiment_id"])
+        XCTAssertEqual(response["embodiment_id"], .string(retainedID))
+        let captured = try V1Time.parse(response.field("captured_at").string())
+        XCTAssertGreaterThanOrEqual(captured.timeIntervalSince(requested), -0.1)
+        XCTAssertLessThan(Date().timeIntervalSince(captured), 10)
+        phone.setForeground(false); phone.setForeground(true)
+        try await wait { phone.isOnline }
+        await phone.refreshConfiguration(caller: caller)
+        XCTAssertNil(phone.setupMessage)
+        XCTAssertEqual(phone.embodimentID, retainedID)
+        XCTAssertEqual(phone.serverConfiguration?.agent_id, configuration.agent_id)
+        print("EMBODIMENT RECOVERY PASS: same retained body and agent; connected; fresh camera evidence; foreground reconnect")
+        #endif
+    }
+
     @MainActor func testPhysicalARKitCameraDiagnosticsAndCoexistence() async throws {
         #if targetEnvironment(simulator)
         throw XCTSkip("Requires physical ARKit camera and production backend")

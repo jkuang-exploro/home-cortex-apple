@@ -154,7 +154,7 @@ final class EmbodimentSetupTransport: @unchecked Sendable {
     }
     deinit { session.invalidateAndCancel() }
     func send(_ path: String, sessionID: String, method: String = "GET", body: Data? = nil) async throws -> Data {
-        let inspection = path.range(of: "^/inspection/v1/embodiments/embodiment:[A-Za-z0-9_-]+/(leases(/[a-f0-9-]{36})?|orientation\\?lease_id=[a-f0-9-]{36}|localization\\?lease_id=[a-f0-9-]{36}|frames\\?lease_id=[a-f0-9-]{36})$", options: .regularExpression) != nil
+        let inspection = path.range(of: "^/inspection/v1/embodiments/embodiment:[A-Za-z0-9_-]+/(leases(/[a-f0-9-]{36})?|orientation\\?lease_id=[a-f0-9-]{36}|localization\\?lease_id=[a-f0-9-]{36}|frames\\?lease_id=[a-f0-9-]{36}|evidence)$", options: .regularExpression) != nil
         guard inspection || path.range(of: "^/embodiments/(setup-options|enrollments|embodiment:[A-Za-z0-9_-]+(/runtime|/remove|/localization-references(/space:[A-Za-z0-9_-]+)?)?)$", options: .regularExpression) != nil,
               let url = URL(string: path, relativeTo: origin)?.absoluteURL, url.host == origin.host,
               url.port == origin.port, !sessionID.isEmpty else { throw ClientFailure.configuration }
