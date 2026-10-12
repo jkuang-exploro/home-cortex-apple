@@ -13,10 +13,14 @@ struct LoginProfile: Sendable {
 }
 
 extension CredentialMetadata {
-    func migratedForLAN(profile: LoginProfile) throws -> CredentialMetadata? {
-        guard configuration.serverHostname == "home-cortex-0",
+    func migratedForTailscale(profile: LoginProfile) throws -> CredentialMetadata? {
+        guard configuration.serverHostname == "192.168.68.59",
               configuration.serverEndpoint.port == 8443, configuration.bootstrapEndpoint.port == 8444,
-              profile.configuration.serverHostname == "192.168.68.59" else { return nil }
+              configuration.protocolVersion == profile.configuration.protocolVersion,
+              profile.configuration.serverHostname == "home-cortex-0",
+              profile.configuration.serverEndpoint.port == 8443, profile.configuration.bootstrapEndpoint.port == 8444 else { return nil }
+        try configuration.validate()
+        try profile.configuration.validate()
         let old = try CertificateTools.certificates(pem: trustedCAPEM).map { SecCertificateCopyData($0) as Data }
         let known = try CertificateTools.certificates(pem: profile.caPEM).map { SecCertificateCopyData($0) as Data }
         guard old == known else { return nil }

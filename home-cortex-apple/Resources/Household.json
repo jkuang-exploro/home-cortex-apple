@@ -1,6 +1,6 @@
 {
-  "server_endpoint": "https://192.168.68.59:8443",
-  "bootstrap_endpoint": "https://192.168.68.59:8444",
-  "server_hostname": "192.168.68.59",
+  "server_endpoint": "https://home-cortex-0:8443",
+  "bootstrap_endpoint": "https://home-cortex-0:8444",
+  "server_hostname": "home-cortex-0",
   "protocol_version": "1.0"
 }

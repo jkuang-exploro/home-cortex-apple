@@ -56,27 +56,77 @@ final class SoftwareLoginTests: XCTestCase {
         let other = String(decoding: try V1ProtocolTests.fixtureData("test-other-ca", extension: "txt"), as: UTF8.self)
         XCTAssertThrowsError(try SoftwareLoginBootstrap(data: Self.response(), profile: LoginProfile(configuration: profile.configuration, caPEM: other)))
     }
-    func testBundledProfileUsesFixedLANAndMigrationPreservesDeviceIdentity() throws {
+    private func legacyCredential(host: String = "192.168.68.59", body: String? = nil,
+                                  rejected: Bool = false, expired: Bool = false) throws -> CredentialMetadata {
         let profile = try LoginProfile.bundled()
-        XCTAssertEqual(profile.configuration.serverHostname, "192.168.68.59")
-        XCTAssertEqual(profile.configuration.serverEndpoint.absoluteString, "https://192.168.68.59:8443")
-        XCTAssertEqual(profile.configuration.bootstrapEndpoint.absoluteString, "https://192.168.68.59:8444")
-        let old = CredentialMetadata(clientID: "client:existing-phone", keyTag: Data("same-device-key".utf8),
-            configuration: try V1ProtocolTests.config(), certificatePEM: "same-cert", caChainPEM: profile.caPEM,
-            trustedCAPEM: profile.caPEM, expiresAt: Date().addingTimeInterval(3600), authenticationRejected: true)
-        let migrated = try XCTUnwrap(old.migratedForLAN(profile: profile))
-        XCTAssertEqual(migrated.keyTag, old.keyTag)
-        XCTAssertEqual(migrated.clientID, old.clientID)
-        XCTAssertEqual(migrated.certificatePEM, old.certificatePEM)
-        XCTAssertEqual(migrated.expiresAt, old.expiresAt)
-        XCTAssertTrue(migrated.authenticationRejected)
-        XCTAssertEqual(migrated.configuration, profile.configuration)
-        XCTAssertNil(try old.migratedForLAN(profile: Self.profile()))
+        let config = try ClientConfiguration.parse(Data("""
+            {"server_endpoint":"https://\(host):8443","bootstrap_endpoint":"https://\(host):8444",
+             "server_hostname":"\(host)","protocol_version":"1.0"}
+            """.utf8))
+        return CredentialMetadata(clientID: "client:existing-phone", keyTag: Data("same-device-key".utf8),
+            configuration: config, certificatePEM: "same-cert", caChainPEM: profile.caPEM,
+            trustedCAPEM: profile.caPEM, expiresAt: Date().addingTimeInterval(expired ? -3600 : 3600),
+            authenticationRejected: rejected, visionObserveGranted: body == nil ? nil : true, embodimentID: body)
+    }
+    func testBundledProfileUsesTailscaleAndMigrationPreservesBothPrincipals() throws {
+        let profile = try LoginProfile.bundled()
+        XCTAssertEqual(profile.configuration.serverHostname, "home-cortex-0")
+        XCTAssertEqual(profile.configuration.serverEndpoint.absoluteString, "https://home-cortex-0:8443")
+        XCTAssertEqual(profile.configuration.bootstrapEndpoint.absoluteString, "https://home-cortex-0:8444")
+        for body in [nil, "embodiment:existing-phone"] as [String?] {
+            let old = try legacyCredential(body: body, rejected: true, expired: true)
+            let migrated = try XCTUnwrap(old.migratedForTailscale(profile: profile))
+            XCTAssertEqual(migrated.keyTag, old.keyTag)
+            XCTAssertEqual(migrated.clientID, old.clientID)
+            XCTAssertEqual(migrated.certificatePEM, old.certificatePEM)
+            XCTAssertEqual(migrated.caChainPEM, old.caChainPEM)
+            XCTAssertEqual(migrated.trustedCAPEM, old.trustedCAPEM)
+            XCTAssertEqual(migrated.expiresAt, old.expiresAt)
+            XCTAssertEqual(migrated.visionObserveGranted, old.visionObserveGranted)
+            XCTAssertEqual(migrated.embodimentID, old.embodimentID)
+            XCTAssertEqual(migrated.purpose, old.purpose)
+            XCTAssertTrue(migrated.authenticationRejected)
+            XCTAssertEqual(migrated.configuration, profile.configuration)
+            XCTAssertNil(try migrated.migratedForTailscale(profile: profile))
+            XCTAssertThrowsError(try migrated.validate())
+        }
+    }
+    func testTailscaleMigrationRequiresKnownOriginPortsAndMatchingCA() throws {
+        let profile = try LoginProfile.bundled()
+        let old = try legacyCredential()
         let different = LoginProfile(configuration: profile.configuration, caPEM: try Self.profile().caPEM)
-        XCTAssertNil(try old.migratedForLAN(profile: different))
+        XCTAssertNil(try old.migratedForTailscale(profile: different))
+        XCTAssertNil(try legacyCredential(host: "other-host").migratedForTailscale(profile: profile))
+        let encoded = String(decoding: try JSONEncoder().encode(old), as: UTF8.self)
+        for (from, to) in [(":8443", ":9443"), (":8444", ":9444")] {
+            let custom = try JSONDecoder().decode(CredentialMetadata.self, from: Data(encoded.replacingOccurrences(of: from, with: to).utf8))
+            XCTAssertNil(try custom.migratedForTailscale(profile: profile))
+        }
+        let customProfile = LoginProfile(configuration: try ClientConfiguration.parse(Data(
+            String(decoding: try JSONEncoder().encode(profile.configuration), as: UTF8.self)
+                .replacingOccurrences(of: "home-cortex-0", with: "other-host").utf8)), caPEM: profile.caPEM)
+        XCTAssertNil(try old.migratedForTailscale(profile: customProfile))
         for bad in ["192.168.68.999", "192.168.068.59", "192.168.68"] {
-            let encoded = String(decoding: try JSONEncoder().encode(profile.configuration), as: UTF8.self)
-            XCTAssertThrowsError(try ClientConfiguration.parse(Data(encoded.replacingOccurrences(of: "192.168.68.59", with: bad).utf8)))
+            let configuration = String(decoding: try JSONEncoder().encode(old.configuration), as: UTF8.self)
+            XCTAssertThrowsError(try ClientConfiguration.parse(Data(configuration.replacingOccurrences(of: "192.168.68.59", with: bad).utf8)))
+        }
+    }
+    func testControllerPersistsTailscaleMigrationWithoutReenrollment() throws {
+        for body in [nil, "embodiment:existing-phone"] as [String?] {
+            let old = try legacyCredential(body: body)
+            let store = try ProvisioningMemoryStore()
+            store.metadata = old
+            let model = ConnectionController(store: store, purpose: old.purpose, automaticallyConnect: false)
+            XCTAssertEqual(model.state, .disconnected)
+            XCTAssertEqual(model.configuration, try LoginProfile.bundled().configuration)
+            XCTAssertEqual(store.metadata?.configuration, model.configuration)
+            XCTAssertEqual(store.metadata?.clientID, old.clientID)
+            XCTAssertEqual(store.metadata?.keyTag, old.keyTag)
+            XCTAssertEqual(store.metadata?.embodimentID, old.embodimentID)
+            XCTAssertEqual(store.prepareCount, 0)
+            let reopened = ConnectionController(store: store, purpose: old.purpose, automaticallyConnect: false)
+            XCTAssertEqual(reopened.configuration, model.configuration)
+            XCTAssertEqual(reopened.credential?.clientID, old.clientID)
         }
     }
 }

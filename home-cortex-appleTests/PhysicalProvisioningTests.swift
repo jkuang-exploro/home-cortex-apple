@@ -4,9 +4,9 @@ import Security
 
 final class PhysicalProvisioningTests: XCTestCase {
     @MainActor
-    func testExistingPhoneCredentialConnectsDirectlyToFixedLAN() async throws {
+    func testExistingPhoneCredentialConnectsToTailscaleHostname() async throws {
         #if targetEnvironment(simulator)
-        throw XCTSkip("Requires the provisioned physical phone and household Wi-Fi.")
+        throw XCTSkip("Requires the provisioned physical phone with Tailscale connected.")
         #else
         let connection = AppRuntime.connection
         let credential = try XCTUnwrap(connection.credential)

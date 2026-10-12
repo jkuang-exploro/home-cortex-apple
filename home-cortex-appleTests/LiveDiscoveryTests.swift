@@ -21,7 +21,7 @@ final class LiveDiscoveryTests: XCTestCase {
         XCTAssertEqual(model.state, .unconfigured, "Trusted discovery must not claim authenticated connection")
         XCTAssertNil(model.session)
         XCTAssertNil(model.credential)
-        // Exercise the actual bundled CA/IP SAN login transport without a real key.
+        // Exercise the actual bundled CA/DNS SAN login transport without a real key.
         let login = try URLSessionSoftwareLogin(profile: LoginProfile.bundled())
         do {
             _ = try await login.signIn(email: "invalid@example.com", apiKey: "invalid-live-test-key")

@@ -24,18 +24,18 @@ The installation bundles `Resources/Household.json` and the original **public** 
 
 ```json
 {
-  "server_endpoint": "https://192.168.68.59:8443",
-  "bootstrap_endpoint": "https://192.168.68.59:8444",
-  "server_hostname": "192.168.68.59",
+  "server_endpoint": "https://home-cortex-0:8443",
+  "bootstrap_endpoint": "https://home-cortex-0:8444",
+  "server_hostname": "home-cortex-0",
   "protocol_version": "1.0"
 }
 ```
 
-Connect the phone to the household Wi-Fi and allow Home Cortex local-network access (Settings → Apps → Home Cortex → Local Network). The client connects directly to the fixed LAN IP; it needs no Tailscale connection or DNS. All requests use TLS 1.3, the bundled CA, and certificate IP SAN verification. No system CA installation or manual CA import is required for sign-in.
+Install Tailscale on the phone, sign in to the same tailnet as `home-cortex-0`, and enable its VPN and DNS settings. The app uses the MagicDNS hostname on home Wi-Fi or another network while Tailscale is connected. All requests use TLS 1.3, the bundled household CA, and certificate DNS SAN verification. No system CA installation or manual CA import is required for sign-in.
 
 Tap **Sign in**, enter the web email/API key, and keep the app open during enrollment. The key is cleared from the field on submission, used only for the HTTPS login request, and never stored. The server issues a ten-minute, software-only invitation internally; the phone generates its Secure Enclave key/CSR and requests its certificate automatically. Subsequent sessions and chat use the device certificate. The server binds the new client to the same mapped household person; removing/remapping that GUI identity removes this conversation permission.
 
-Existing credentials using `home-cortex-0` automatically migrate to the LAN endpoint only when their trusted CA matches the bundled CA. Their key, certificate, client ID, expiry, and rejection status are preserved. The server certificate retains the old DNS SAN and adds `192.168.68.59` as an IP SAN using the original CA/server key.
+Existing CALLER and DEVICE credentials using the previous fixed LAN endpoint automatically migrate to `home-cortex-0` only when their trusted CA matches the bundled CA and their ports/protocol match the household profile. Their key, certificate, client ID, body, grants, expiry, and rejection status are preserved; no re-enrollment is needed. Already migrated credentials and custom origins are left unchanged. The existing server certificate covers `home-cortex-0`.
 
 **Sign out** deletes the local device identity/key; the next sign-in obtains a new credential. Local sign-out does not revoke the server credential. **Advanced connection setup** retains manual configuration, CA import, discovery, and operator-invitation enrollment for maintenance. Imported origins must be HTTPS with a matching DNS hostname or valid IPv4 address and no credentials, paths, query, or fragment.
 

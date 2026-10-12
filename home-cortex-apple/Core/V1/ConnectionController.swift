@@ -121,7 +121,7 @@ final class ConnectionController {
             credential = try store.load()
             if let credential, credential.purpose != purpose { throw ClientFailure.invalidCertificate }
             if let stored = credential, let profile = try? LoginProfile.bundled(),
-               let migrated = try? stored.migratedForLAN(profile: profile) {
+               let migrated = try? stored.migratedForTailscale(profile: profile) {
                 try store.save(migrated)
                 credential = migrated
             }
