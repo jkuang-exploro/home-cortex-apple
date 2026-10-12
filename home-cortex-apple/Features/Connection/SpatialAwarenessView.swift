@@ -2,537 +2,214 @@ import SwiftUI
 import simd
 
 struct SpatialAwarenessView: View {
-  @Bindable var embodiment: EmbodimentController
-  let caller: ConnectionController
-  @State private var wizard = false
-  private var calibration: SpatialCalibrationSession { embodiment.localization.calibration }
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Spatial Awareness").font(.headline)
-      LabeledContent(
-        "Motion tracking",
-        value: embodiment.localization.camera.tracking.supported ? "Supported" : "Unavailable")
-      LabeledContent(
-        "Household localization",
-        value: calibration.state == .anchored
-          ? "Aligned · Accuracy unvalidated"
-          : calibration.state == .relocalizationRequired ? "Needs relocalization" : "Not calibrated"
-      )
-      LabeledContent(
-        "Space", value: embodiment.selectedLocalizationSpace?.displayName ?? "Not selected")
-      if let reference = calibration.reference {
-        LabeledContent("Reference", value: reference.displayName)
-      }
-      if let time = calibration.calibratedAt {
-        LabeledContent("Last captured", value: time.formatted(date: .abbreviated, time: .shortened))
-      }
-      Text(calibration.message).font(.footnote).foregroundStyle(.secondary)
-      if let pose = calibration.bodyPose {
-        let a = IPhoneBodyFrame.euler(pose.rotation)
-        LabeledContent(
-          "Provisional X / Y / Z",
-          value: String(
-            format: "%.2f / %.2f / %.2f m", pose.translation.x, pose.translation.y,
-            pose.translation.z))
-        LabeledContent(
-          "Yaw / Pitch / Roll",
-          value: String(
-            format: "%.1f / %.1f / %.1f°", a.x * 180 / .pi, a.y * 180 / .pi, a.z * 180 / .pi))
-        Text("Accuracy unknown. This pose is diagnostic and is not canonical household telemetry.")
-          .font(.footnote)
-      }
-      Button(
-        embodiment.pendingReferenceSave != nil
-          ? "Resume reference save"
-          : calibration.reference == nil
-            ? "Set Up Spatial Awareness" : "Relocalize / Manage Reference"
-      ) { wizard = true }
-      .accessibilityIdentifier("embodiment.spatial.setup")
-      .disabled(caller.displayedState != .connected)
-      if !embodiment.localizationSelected {
-        Text(
-          "Turn on Visual-inertial localization to capture a reference. Saved references are retained when tracking is off."
-        ).font(.footnote)
-      }
+    @Bindable var embodiment: EmbodimentController
+    let caller: ConnectionController
+    @State private var wizard = false
+    private var calibration: VisualAnchorCalibration { embodiment.localization.visualCalibration }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Spatial Awareness").font(.headline)
+            LabeledContent("Motion tracking", value: embodiment.localization.camera.tracking.supported ? "Supported" : "Unavailable")
+            LabeledContent("Room alignment", value: calibration.aligned ? "Aligned from vision" : "Needs anchor calibration")
+            LabeledContent("Space", value: embodiment.selectedLocalizationSpace?.displayName ?? "Not selected")
+            Text(calibration.message).font(.footnote)
+            AnchorCalibrationFeedback(calibration: calibration, isActive: !wizard)
+            if let pose = calibration.cameraPose {
+                VisualPoseReadout(pose: pose)
+                Text("Rear camera optical center · Room coordinates · Accuracy unvalidated").font(.footnote)
+            }
+            if let time = calibration.calibratedAt {
+                LabeledContent("Last anchor observation", value: time.formatted(date: .abbreviated, time: .shortened))
+            }
+            Button(calibration.aligned ? "Recalibrate from anchors" : "Calibrate facing an anchor") { wizard = true }
+                .accessibilityIdentifier("embodiment.spatial.setup")
+                .disabled(caller.displayedState != .connected)
+            if !embodiment.localizationSelected {
+                Text("Turn on Visual-inertial localization in Embodiment before capturing.").font(.footnote)
+            }
+        }
+        .sheet(isPresented: $wizard) { VisualAnchorCalibrationView(embodiment: embodiment, caller: caller) }
     }
-    .sheet(isPresented: $wizard) {
-      SpatialCalibrationWizard(embodiment: embodiment, caller: caller)
-    }
-  }
 }
 
-private enum CalibrationStep: Int, CaseIterable {
-  case space, reference, prepare, capture, validate, save, done
+private struct VisualPoseReadout: View {
+    let pose: RigidTransform
+    var body: some View {
+        let angles = IPhoneBodyFrame.euler(pose.rotation)
+        LabeledContent("Camera X / Y / Z", value: String(format: "%.3f / %.3f / %.3f m", pose.translation.x, pose.translation.y, pose.translation.z))
+        LabeledContent("Camera yaw / pitch / roll", value: String(format: "%.1f / %.1f / %.1f°", angles.x*180 / .pi, angles.y*180 / .pi, angles.z*180 / .pi))
+    }
 }
-private enum ReferenceOperation { case create, relocalize, redefine }
 
-struct SpatialCalibrationWizard: View {
-  @Bindable var embodiment: EmbodimentController
-  let caller: ConnectionController
-  @Environment(\.dismiss) private var dismiss
-  @State private var step = CalibrationStep.space
-  @State private var operation = ReferenceOperation.create
-  @State private var selectedReferenceID = ""
-  @State private var label = ""
-  @State private var placement = ""
-  @State private var direction = ""
-  @State private var x = ""
-  @State private var y = ""
-  @State private var z = ""
-  @State private var heading = ""
-  @State private var placementConfirmed = false
-  @State private var frameConfirmed = false
-  @State private var prepared: PendingReferenceSave?
-  @State private var candidate: CalibrationCandidate?
-  @State private var failure: String?
-  @State private var busy = false
-  @State private var captureTask: Task<Void, Never>?
-  @State private var saveTask: Task<Void, Never>?
-  @State private var confirmRedefinition = false
-  @State private var status = ""
-  @State private var keptAwake = false
-  private var space: LocalizationSpaceOption? { embodiment.selectedLocalizationSpace }
-  private var selectedReference: LocalizationReferenceOption? {
-    space?.references.first { $0.id == selectedReferenceID }
-  }
-  private var tracking: ARLocalTracking { embodiment.localization.camera.tracking }
-  private var measuredExtrinsic: RigidTransform? {
-    guard let t = IPhoneRearCameraGeometry.opticalCenterBodyMeters,
-      let q = IPhoneRearCameraGeometry.calibratedBodyFromOptical
-    else { return nil }
-    return try? RigidTransform(rotation: q, translation: t)
-  }
-  private var ready: Bool {
-    embodiment.localizationSelected && embodiment.isOnline && tracking.running
-      && tracking.state == .unanchored
-  }
-
-  var body: some View {
-    NavigationStack {
-      Form {
-        Section {
-          Text("Step \(min(step.rawValue+1,6)) of 6").font(.caption).foregroundStyle(.secondary)
-          content
-        }
-        if let failure {
-          Section { Text(failure).foregroundStyle(.red).accessibilityIdentifier("spatial.error") }
-        }
-        if busy { ProgressView(status) }
-        if step != .done && !busy {
-          Section {
-            if step.rawValue > 0 {
-              Button("Back") {
-                candidate = nil
-                failure = nil
-                step = CalibrationStep(rawValue: step.rawValue - 1) ?? .space
-              }
+/// Used both in the scanner and after it closes: background observations still
+/// deliver completion feedback and a conflict can never become a hidden warning.
+private struct AnchorCalibrationFeedback: View {
+    let calibration: VisualAnchorCalibration
+    var isActive = true
+    @State private var notice: String?
+    @State private var showingConflict = false
+    @State private var failure: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let notice {
+                Label(notice, systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green).font(.headline)
+                    .accessibilityIdentifier("spatial.calibration.finished")
             }
-            if step == .space {
-              Button("Continue") {
-                step = .reference
-                label = (space?.displayName ?? "Room") + " Reference"
-              }.disabled(space == nil)
+            ForEach(calibration.completedBoardIDs, id: \.self) { id in
+                Label(id + ": Calibration finished", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
             }
-            if step == .reference { Button("Continue") { prepareDraft() } }
-            if step == .prepare {
-              Button("Continue") { step = .capture }.disabled(!placementConfirmed)
+            if !calibration.ignoredBoardIDs.isEmpty {
+                Text("Skipped until recalibration: " + calibration.ignoredBoardIDs.joined(separator: ", "))
+                    .font(.footnote)
             }
-            if step == .capture {
-              Button("Start automatic flat capture") { startCapture() }.disabled(
-                !embodiment.localizationSelected || !embodiment.isOnline)
-              if operation != .relocalize {
-                Button("Save physical reference provisionally") {
-                  step = .validate
-                  candidate = nil
-                }
-              }
-            }
-            if step == .validate {
-              Button(operation == .relocalize ? "Activate session alignment" : "Continue to save") {
-                if operation == .relocalize { activate() } else { step = .save }
-              }.disabled(operation == .relocalize && candidate == nil)
-            }
-            if step == .save {
-              Button("Save reference") {
-                if operation == .redefine { confirmRedefinition = true } else { save() }
-              }.disabled(caller.displayedState != .connected || space?.can_manage != true)
-            }
-            if !status.isEmpty { Text(status).font(.footnote) }
-          }
+            if let failure { Text(failure).foregroundStyle(.red) }
         }
-        if step == .done { Button("Done") { dismiss() } }
-      }
-      .navigationTitle("Spatial Calibration")
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") {
-            captureTask?.cancel()
-            saveTask?.cancel()
-            dismiss()
-          }
+        .sensoryFeedback(.success, trigger: calibration.completionSequence) { _, _ in
+            isActive && calibration.completionNotice != nil
         }
-      }
-      .alert("Redefine shared reference?", isPresented: $confirmRedefinition) {
-        Button("Save new reference version", role: .destructive) { save() }
-        Button("Cancel", role: .cancel) {}
-      } message: {
-        Text(
-          "This changes a shared household reference. Existing room coordinates are preserved. Other embodiments must relocalize against the new version."
-        )
-      }
-      .task {
-        await embodiment.loadLocalizationReferences(caller: caller)
-        if let pending = embodiment.pendingReferenceSave {
-          embodiment.selectedLocalizationSpaceID = pending.spaceID
-          prepared = pending
-          selectedReferenceID = pending.reference.id
-          operation = pending.expectedRevision == 0 ? .create : .redefine
-          step = .save
-          status =
-            "A previous save was interrupted. Retry the same reference; it will not create a duplicate."
+        .task(id: calibration.completionSequence) {
+            guard isActive, let message = calibration.completionNotice else { return }
+            notice = message
+            UIAccessibility.post(notification: .announcement, argument: message)
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            notice = nil
         }
-      }
-      .onDisappear {
-        captureTask?.cancel()
-        saveTask?.cancel()
-        if keptAwake { UIApplication.shared.isIdleTimerDisabled = false }
-      }
-    }
-  }
-  @ViewBuilder private var content: some View {
-    switch step {
-    case .space:
-      Text("Choose an existing household space.")
-      Picker("Space", selection: $embodiment.selectedLocalizationSpaceID) {
-        Text("Select a space").tag("")
-        ForEach(embodiment.localizationSpaces) { Text($0.displayName).tag($0.space_id) }
-      }.accessibilityIdentifier("spatial.space")
-      Text("To add a room, use your household's authorized editing workflow.").font(.footnote)
-      if let message = embodiment.localizationReferenceMessage { Text(message) }
-      Button("Refresh") { Task { await embodiment.loadLocalizationReferences(caller: caller) } }
-    case .reference:
-      if let space {
-        if !space.references.isEmpty {
-          Picker("Reference", selection: $selectedReferenceID) {
-            Text("Choose a reference").tag("")
-            ForEach(space.references) { Text($0.displayName).tag($0.id) }
-          }
-          if let reference = selectedReference {
-            Text(reference.reference.placement_instructions)
-            Button("Use existing reference") {
-              operation = .relocalize
-              prepareDraft()
-            }
-            if space.can_manage {
-              Button("Redefine this reference") {
-                operation = .redefine
-                label = reference.displayName
-                placement = reference.reference.placement_instructions
-                x = String(reference.position.x)
-                y = String(reference.position.y)
-                z = String(reference.position.z)
-                heading = String(reference.orientation.yaw * 180 / .pi)
-              }
-            }
-          }
+        .onChange(of: calibration.completedBoardIDs) {
+            if calibration.completedBoardIDs.isEmpty { notice = nil }
         }
-        if space.can_manage {
-          if operation != .redefine {
-            Text("Create a fixed, flat placement reference").font(.headline)
-          }
-          TextField("Reference name", text: $label)
-          TextField(
-            "Fixed surface and exact placement (e.g. bedside-table corner)", text: $placement,
-            axis: .vertical)
-          TextField(
-            "Fixed edge/direction for the phone's top edge", text: $direction, axis: .vertical)
-          if !space.coordinate_ready {
-            Text(
-              "This creates a user-established local frame: origin at the phone's body center in this fixed placement; +X along the top edge; +Y to the left when facing +X; +Z vertically up. Units are meters; rotations are radians. It is not a geographic or whole-house survey."
-            ).font(.footnote)
-            Toggle("This physical position and direction are repeatable", isOn: $frameConfirmed)
-          } else {
-            Text(
-              "The room frame is already defined and will be preserved. Enter the measured phone body-center position in that frame and the top-edge direction measured from +X toward +Y."
-            ).font(.footnote)
-            HStack {
-              TextField("X (m)", text: $x)
-              TextField("Y (m)", text: $y)
-              TextField("Z (m)", text: $z)
-            }.keyboardType(.numbersAndPunctuation)
-            TextField("Top-edge direction (degrees)", text: $heading).keyboardType(
-              .numbersAndPunctuation)
-          }
-          if operation == .relocalize {
-            Button("Create a new reference instead") {
-              operation = .create
-              selectedReferenceID = ""
-            }
-          }
-        } else {
-          Text(
-            "You can use an existing reference. A household administrator must authorize you before you can create or redefine one."
-          ).font(.footnote)
+        .onChange(of: calibration.pendingConflict?.id, initial: true) {
+            showingConflict = isActive && calibration.pendingConflict != nil
         }
-      }
-    case .prepare:
-      Text("Prepare a flat reference").font(.headline)
-      Text(prepared?.reference.reference.placement_instructions ?? "")
-      Text(
-        "Use the same fixed placement and direction every time. Lay the phone screen-down so the rear camera can see the room. Do not cover the camera. No upright hold is needed."
-      )
-      Toggle("I can reproduce this position and direction", isOn: $placementConfirmed)
-      LabeledContent("Camera access", value: embodiment.localization.camera.permissionLabel)
-      LabeledContent("Spatial tracking", value: embodiment.localizationSelected ? "On" : "Off")
-      LabeledContent("DEVICE connection", value: embodiment.isOnline ? "Ready" : "Disconnected")
-      if embodiment.localization.camera.availability != nil {
-        Button("Open iPhone Settings") {
-          if let url = URL(string: UIApplication.openSettingsURLString) {
-            UIApplication.shared.open(url)
-          }
+        .onChange(of: isActive) {
+            showingConflict = isActive && calibration.pendingConflict != nil
         }
-      }
-      if !embodiment.localizationSelected {
-        Text(
-          "Enable Visual-inertial localization in Embodiment before capturing. This wizard does not enable sensors automatically."
-        )
-      }
-    case .capture:
-      Text("Lay flat to capture").font(.headline)
-      LabeledContent("Tracking", value: tracking.state.rawValue)
-      Text(tracking.reason)
-      Text(
-        "Start capture, then lay the phone screen-down at the fixed placement. It captures automatically when tracking is healthy, the camera faces up and the phone stays still. A vibration signals completion. Pick it up afterward."
-      )
-      if measuredExtrinsic == nil {
-        Text(CalibrationError.geometry.localizedDescription).font(.footnote)
-      }
-    case .validate:
-      Text(candidate == nil ? "Physical reference only" : "Reference observations captured").font(
-        .headline)
-      if let candidate {
-        Text(
-          "Steady observations were obtained in the current tracking session. This checks repeatability, not spatial accuracy."
-        )
-        if candidate.alignment == nil {
-          Text(CalibrationError.geometry.localizedDescription)
-        } else {
-          Text(
-            "The household alignment is geometrically valid. Accuracy remains unvalidated and canonical pose publication is disabled."
-          )
-        }
-      } else {
-        Text(
-          "The placement definition will be saved provisionally. No household alignment or accuracy was established."
-        )
-      }
-    case .save:
-      Text("Save household reference").font(.headline)
-      Text(prepared?.reference.displayName ?? "")
-      Text(
-        "This stores the fixed physical placement in Home Cortex. Session tracking coordinates are not stored as household truth."
-      )
-      if operation == .redefine {
-        Text(
-          "This is a new version of a shared reference. You will confirm the change before saving.")
-      }
-    case .done:
-      Text("Reference available").font(.headline)
-      Text(status)
-      Text(embodiment.localization.calibration.message)
-      Text("Spatial accuracy is unvalidated. Canonical household pose remains unavailable.").font(
-        .footnote)
-    }
-  }
-  private func prepareDraft() {
-    failure = nil
-    candidate = nil
-    guard let space else { return }
-    if operation == .relocalize, let reference = selectedReference {
-      prepared = .init(
-        spaceID: space.space_id, reference: reference,
-        expectedRevision: reference.reference.revision, frameDefinition: nil)
-      step = .prepare
-      return
-    }
-    guard space.can_manage, let person = embodiment.localizationReferencePersonID,
-      !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      !placement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-      !direction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    else {
-      failure =
-        "Provide a name, a fixed physical placement and its direction. Reference-management authority is required."
-      return
-    }
-    let id =
-      operation == .redefine
-      ? selectedReference?.id
-      : "reference_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-    guard let id else { return }
-    let position: ReferenceVector
-    let yaw: Double
-    if space.coordinate_ready {
-      guard let px = Double(x), let py = Double(y), let pz = Double(z), let h = Double(heading),
-        [px, py, pz, h].allSatisfy(\.isFinite), [px, py, pz].allSatisfy({ abs($0) < 10000 })
-      else {
-        failure =
-          "Enter measured body-center coordinates and the top-edge direction in the existing room frame."
-        return
-      }
-      position = .init(x: px, y: py, z: pz)
-      yaw = h * .pi / 180
-    } else {
-      guard frameConfirmed else {
-        failure =
-          "Confirm a repeatable physical origin and direction. Selecting a room cannot establish coordinates."
-        return
-      }
-      position = .init(x: 0, y: 0, z: 0)
-      yaw = 0
-    }
-    let provenance = ReferenceProvenance(
-      person_id: person, surveyed_at: V1Time.format(Date()),
-      method: "User-established fixed flat placement; independent accuracy not validated")
-    let instructions =
-      "Lay this iPhone flat, screen-down at: \(placement). Point its top edge along: \(direction). Reuse the same physical position and direction."
-    let reference = LocalizationReferenceOption(
-      id: id, type: "survey_point", position: position,
-      orientation: .init(yaw: yaw, pitch: .pi / 2, roll: 0),
-      reference: .init(
-        revision: operation == .redefine ? (selectedReference?.reference.revision ?? 0) + 1 : 1,
-        reference_frame: "fixed_body_placement.v1",
-        coordinate_convention: "right_handed_zyx_z_up_si_v1", body_frame: "iphone.body.v1",
-        body_in_reference: .identity,
-        placement_instructions: instructions,
-        measurement_notes:
-          "User-established relative reference. Placement error, camera/body geometry, drift and spatial accuracy are not validated.",
-        provenance: provenance, status: "provisional", display_name: label))
-    let frame: JSONValue?
-    if space.coordinate_ready {
-      frame = nil
-    } else {
-      frame = .object([
-        "source": .string("user_established_local"),
-        "origin_definition": .string("Body center of the phone at " + placement),
-        "positive_x_definition": .string("Phone top edge along " + direction),
-        "positive_y_definition": .string("Left when facing the marked positive X direction"),
-        "positive_z_definition": .string("vertical_up"),
-        "convention": .string("right_handed_zyx_z_up_si_v1"), "reference_id": .string(id),
-        "provenance": .object([
-          "person_id": .string(person), "surveyed_at": .string(provenance.surveyed_at),
-          "method": .string(provenance.method),
-        ]),
-      ])
-    }
-    prepared = .init(
-      spaceID: space.space_id, reference: reference,
-      expectedRevision: operation == .redefine ? selectedReference?.reference.revision ?? 0 : 0,
-      frameDefinition: frame)
-    step = .prepare
-  }
-  private func startCapture() {
-    guard let prepared else { return }
-    failure = nil
-    busy = true
-    status = "Waiting for healthy tracking and a steady flat placement…"
-    keptAwake = !UIApplication.shared.isIdleTimerDisabled
-    UIApplication.shared.isIdleTimerDisabled = true
-    captureTask = Task { @MainActor in
-      defer {
-        busy = false
-        if keptAwake {
-          UIApplication.shared.isIdleTimerDisabled = false
-          keptAwake = false
-        }
-      }
-      let deadline = Date().addingTimeInterval(60)
-      var samples: [CalibrationObservation] = []
-      let world = tracking.worldID
-      let session = embodiment.connection.session?.sessionID
-      do {
-        guard let world, let session else { throw CalibrationError.tracking }
-        while Date() < deadline {
-          try Task.checkCancellation()
-          guard world == tracking.worldID, session == embodiment.connection.session?.sessionID
-          else { throw CalibrationError.reset }
-          if ready, let pose = tracking.cameraPose, let time = tracking.measuredAt,
-            Date().timeIntervalSince(time) < 0.3
-          {
-            let observation = CalibrationObservation(
-              worldID: world, deviceSession: session, measuredAt: time, cameraPose: pose,
-              healthy: true)
-            if observation.screenDownAndFlat {
-              if samples.last?.measuredAt != time { samples.append(observation) }
-              if samples.count >= 15 {
-                do {
-                  candidate = try CalibrationValidation.candidate(
-                    reference: prepared.reference, spaceID: prepared.spaceID,
-                    observations: samples, bodyFromCamera: measuredExtrinsic, now: Date())
-                  step = .validate
-                  UINotificationFeedbackGenerator().notificationOccurred(.success)
-                  return
-                } catch CalibrationError.moved {
-                  samples.removeAll()
-                  status = "Wait for a steady flat placement…"
-                }
-              }
+        .alert("Anchors disagree", isPresented: $showingConflict, presenting: calibration.pendingConflict) { conflict in
+            if calibration.aligned {
+                Button("Keep current calibration", role: .cancel) { calibration.keepCurrentCalibration() }
             } else {
-              samples.removeAll()
+                Button("Cancel calibration", role: .cancel) { calibration.invalidate("Calibration cancelled. Choose a reference anchor to try again.") }
             }
-          } else {
-            samples.removeAll()
-          }
-          try await Task.sleep(for: .milliseconds(100))
+            ForEach(conflict.choices, id: \.self) { id in
+                Button("Erase and calibrate from " + id, role: .destructive) {
+                    do { try calibration.eraseAndRecalibrate(using: id) }
+                    catch { failure = error.localizedDescription; showingConflict = true }
+                }
+            }
+        } message: { conflict in
+            Text(conflict.description)
         }
-        throw CalibrationError.tracking
-      } catch is CancellationError { return } catch {
-        failure = error.localizedDescription
-        UINotificationFeedbackGenerator().notificationOccurred(.error)
-      }
     }
-  }
-  private func activate() {
-    guard let candidate else { return }
-    do {
-      guard ready else { throw CalibrationError.tracking }
-      try embodiment.localization.calibration.activate(
-        candidate, currentWorld: tracking.worldID,
-        currentSession: embodiment.connection.session?.sessionID, bodyFromCamera: measuredExtrinsic)
-      embodiment.rememberLocalizationReference(candidate.reference, spaceID: candidate.spaceID)
-      status =
-        candidate.alignment == nil
-        ? "Reference captured provisionally. Household alignment requires measured device geometry."
-        : "Session alignment activated provisionally."
-      step = .done
-    } catch { failure = error.localizedDescription }
-  }
-  private func save() {
-    guard let prepared else { return }
-    busy = true
-    failure = nil
-    status = "Saving reference…"
-    saveTask = Task { @MainActor in
-      defer { busy = false }
-      do {
-        _ = try await embodiment.saveLocalizationReference(
-          prepared.reference, spaceID: prepared.spaceID,
-          expectedRevision: prepared.expectedRevision, frameDefinition: prepared.frameDefinition,
-          caller: caller)
-        if candidate != nil && ready {
-          activate()
-        } else {
-          status = "Physical reference saved. Return to its fixed placement to relocalize."
-          step = .done
+}
+
+struct VisualAnchorCalibrationView: View {
+    @Bindable var embodiment: EmbodimentController
+    let caller: ConnectionController
+    @Environment(\.dismiss) private var dismiss
+    @State private var mountedBoards = Set<String>()
+    @State private var mountingConfirmed = false
+    @State private var failure: String?
+    @State private var preview: UIImage?
+    @State private var captureStarted = false
+    private var calibration: VisualAnchorCalibration { embodiment.localization.visualCalibration }
+    private var catalog: VisualAnchorCatalog? { embodiment.selectedLocalizationSpace?.anchor_boards }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Room and mounted anchors") {
+                    Picker("Space", selection: $embodiment.selectedLocalizationSpaceID) {
+                        Text("Select a space").tag("")
+                        ForEach(embodiment.localizationSpaces) { Text($0.displayName).tag($0.space_id) }
+                    }.accessibilityIdentifier("spatial.space")
+                    if let catalog {
+                        ForEach(catalog.boards, id: \.board_id) { board in
+                            Toggle(board.board_id, isOn: Binding(
+                                get: { mountedBoards.contains(board.board_id) },
+                                set: { if $0 { mountedBoards.insert(board.board_id) } else { mountedBoards.remove(board.board_id) } }))
+                        }
+                        Text("Select only the anchors physically mounted in this room. One anchor is sufficient; additional visible anchors improve the joint pose estimate.")
+                            .font(.footnote)
+                        Toggle("Mounted positions and print scale match the room's anchor geometry", isOn: $mountingConfirmed)
+                        Text("Saved installation coordinates are provisional. Verify the actual placement and print size before relying on room coordinates.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Text("No readable anchors for this room. Import its anchor manifest and grant anchor read access, then refresh.")
+                    }
+                    Button("Refresh anchors") { Task { await embodiment.loadLocalizationReferences(caller: caller) } }
+                    if let message = embodiment.localizationReferenceMessage { Text(message).foregroundStyle(.red) }
+                }
+                Section("Face an anchor") {
+                    Text("Hold the iPhone normally and point its rear camera at a selected anchor. Keep the printed tags clear and fully visible. Move a little sideways if the view is ambiguous.")
+                    if let preview {
+                        Image(uiImage: preview).resizable().scaledToFit().frame(maxHeight: 300)
+                            .accessibilityLabel("Live rear camera view")
+                    }
+                    LabeledContent("DEVICE connection", value: embodiment.isOnline ? "Ready" : "Disconnected")
+                    LabeledContent("Tracking", value: embodiment.localization.camera.tracking.reason)
+                    Button(captureStarted ? "Restart visual calibration" : "Start visual calibration") { start() }
+                        .accessibilityIdentifier("spatial.visual.capture")
+                        .disabled(catalog == nil || mountedBoards.isEmpty || !mountingConfirmed || !embodiment.isOnline || !embodiment.localizationSelected)
+                    if captureStarted {
+                        Text(calibration.message)
+                        LabeledContent("Anchors used", value: calibration.boardIDs.joined(separator: ", "))
+                        LabeledContent("Tags in latest fit", value: String(calibration.tagCount))
+                        if let rmse = calibration.reprojectionRMSE {
+                            LabeledContent("Reprojection error", value: String(format: "%.2f px", rmse))
+                        }
+                    }
+                    if let failure { Text(failure).foregroundStyle(.red) }
+                }
+                if calibration.enabled || calibration.aligned {
+                    Section("Calibration status") {
+                        AnchorCalibrationFeedback(calibration: calibration)
+                        LabeledContent("Active reference anchors", value: calibration.activeBoardIDs.joined(separator: ", "))
+                    }
+                }
+                if let pose = calibration.cameraPose {
+                    Section("Room pose · 6 DOF") {
+                        VisualPoseReadout(pose: pose)
+                        Text("Origin: rear camera optical center. ARKit carries the room alignment while you move. Facing more mounted anchors refines it. Tracking resets require recalibration.")
+                            .font(.footnote)
+                        Text("Accuracy is unvalidated. Reprojection error measures image fit, not physical position error. This position is the rear camera's location, separate from the phone's center.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Visual Anchor Calibration")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .onChange(of: embodiment.selectedLocalizationSpaceID) {
+                mountedBoards = []; mountingConfirmed = false; captureStarted = false
+                calibration.invalidate("Room changed. Select its mounted anchors and calibrate.")
+            }
+            .onChange(of: mountedBoards) {
+                if captureStarted { captureStarted = false; calibration.invalidate("Anchor selection changed. Start calibration again.") }
+            }
+            .onChange(of: mountingConfirmed) {
+                if !mountingConfirmed && captureStarted {
+                    captureStarted = false; calibration.invalidate("Confirm physical mounting before calibration.")
+                }
+            }
+            .task {
+                await embodiment.loadLocalizationReferences(caller: caller)
+                while !Task.isCancelled {
+                    if embodiment.localization.camera.tracking.running,
+                       let image = try? await embodiment.localization.camera.tracking.previewImage() {
+                        preview = UIImage(data: image.jpeg)
+                    } else { preview = nil }
+                    do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+                }
+            }
         }
-        if step != .done {
-          status =
-            "Reference saved; tracking changed before activation. Relocalize using the saved reference."
-          step = .done
-        }
-      } catch {
-        failure = error.localizedDescription
-        status = "Save was not confirmed. Retry this same reference to recover without duplicates."
-      }
     }
-  }
+    private func start() {
+        failure = nil
+        guard mountingConfirmed, let catalog, let session = embodiment.connection.session?.sessionID else { return }
+        do {
+            try calibration.begin(catalog: catalog, selectedBoards: mountedBoards, deviceSession: session)
+            captureStarted = true
+        } catch { failure = error.localizedDescription }
+    }
 }

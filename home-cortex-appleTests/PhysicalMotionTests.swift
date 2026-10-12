@@ -4,6 +4,42 @@ import simd
 @testable import HomeCortex
 
 final class PhysicalMotionTests: XCTestCase {
+    @MainActor func testPhysicalVisualAnchorCatalogAndRawFrame() async throws {
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Requires the retained physical iPhone and deployed anchor catalog")
+        #else
+        let previousIdleTimer = UIApplication.shared.isIdleTimerDisabled
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer { UIApplication.shared.isIdleTimerDisabled = previousIdleTimer }
+        let caller = AppRuntime.connection, phone = AppRuntime.embodiment
+        caller.setForeground(true); caller.connect(); phone.setForeground(true); phone.enableRuntime()
+        try await wait { caller.displayedState == .connected && phone.isOnline }
+        await phone.refreshConfiguration(caller: caller)
+        XCTAssertNil(phone.setupMessage)
+        let room = try XCTUnwrap(phone.localizationSpaces.first { $0.anchor_boards != nil })
+        let catalog = try XCTUnwrap(room.anchor_boards)
+        XCTAssertEqual(catalog.space_id,room.space_id)
+        let firstBoard = try XCTUnwrap(catalog.boards.first)
+        let tags = try catalog.geometry(selectedBoards:[firstBoard.board_id])
+        XCTAssertGreaterThanOrEqual(tags.count,1)
+        await phone.changeLocalization(true,caller:caller)
+        XCTAssertNil(phone.setupMessage)
+        let logger = Task { @MainActor in
+            while !Task.isCancelled {
+                print("VISUAL CAMERA readiness permission=\(phone.localization.camera.permissionLabel) \(phone.localization.camera.tracking.debugStatus)")
+                do { try await Task.sleep(for:.seconds(5)) } catch { return }
+            }
+        }
+        defer { logger.cancel() }
+        try await wait { phone.localization.camera.tracking.state == .unanchored }
+        let frame = try phone.localization.camera.tracking.visualFrame()
+        XCTAssertEqual(frame.pixels.count,frame.stride*frame.height)
+        XCTAssertGreaterThan(frame.intrinsics.fx,0)
+        XCTAssertGreaterThan(frame.intrinsics.fy,0)
+        XCTAssertEqual(frame.worldID,phone.localization.camera.tracking.worldID)
+        print("VISUAL ANCHOR INTEGRATION PASS: authenticated catalog, selected-board geometry, raw camera pixels and intrinsics in one ARKit epoch")
+        #endif
+    }
     @MainActor func testPhysicalEmbodimentConnectionRecovery() async throws {
         #if targetEnvironment(simulator)
         throw XCTSkip("Requires the retained physical iPhone and production backend")

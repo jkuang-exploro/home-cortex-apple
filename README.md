@@ -393,3 +393,63 @@ or a household orientation grant. Local motion never publishes
 
 Body axes, quaternion math, camera extrinsic limits and Epic 1.2 prerequisites
 are defined in [the orientation foundation](docs/orientation-foundation.md).
+
+## Visual anchor calibration
+
+Open **Embodiment → Visual-inertial localization → Spatial Awareness → Calibrate
+facing an anchor**. Choose the existing room and select only its physically mounted
+boards. Verify print size and placement against the room's anchor geometry, then
+start visual calibration while facing a board with the rear camera. No flat placement
+or measured starting phone pose is needed. The live preview and detection status help
+frame the tags. One visible AprilTag supplies a 6-DOF pose when its planar-pose branch
+is unambiguous; keeping the full four-tag board visible provides more constraints.
+
+The native tag36h11 detector uses raw ARFrame luma and matching camera intrinsics.
+A joint reprojection fit uses all accepted corners across visible boards, rejects
+outliers and ambiguous branches, and aligns ARKit's current tracking world to the
+room. Additional mounted boards constrain the same fit; later observations refine
+alignment. ARKit carries the pose when a board leaves view. Tracking interruption,
+reset, camera handoff, DEVICE reconnect or sensor shutdown invalidates alignment.
+Face an anchor to recalibrate in the new session.
+
+The displayed six components describe the **rear camera optical center**, with
+optical right/down/forward axes expressed in the room's right-handed Z-up frame.
+They are not a fabricated phone body-center position. A measured camera/body
+extrinsic and independently validated uncertainty are still required for canonical
+body telemetry. Reprojection residual and alignment scatter are diagnostics, not
+physical p95 accuracy. Fixed planned-unsurveyed board definitions are preserved;
+checking installation in this flow enables provisional alignment and does not
+promote them to surveyed ground truth.
+
+The backend's existing localization-reference catalog includes normalized anchor
+geometry only for spaces the CALLER may read through its anchor-reader or reference-
+manager policy. No anchor writer grant is needed to calibrate. Updating this backend
+and importing the room's manifest into the deployed graph are prerequisites for the
+phone to load its anchors. Anchor identity, coordinates and manifest provenance come
+from Home Cortex; all image processing and transform math run locally on the phone.
+
+AprilRobotics/apriltag 3.4.5 is vendored at commit
+`b7c0ebe9aa20f82ec7a828579004f9e706bfecd9`, with license and provenance in
+`Core/V1/AprilTag/`. It shares the existing ARKit camera owner and does not start a
+second capture session. Deterministic tests cover full 6-DOF single-board recovery,
+multiple-board fitting, outlier rejection, raw-image detection and tracking epochs.
+Synthetic tests do not establish physical localization accuracy.
+
+Each anchor now receives a **Calibration finished** banner, success haptic and
+accessibility announcement after at least three accepted observations spanning
+0.4 seconds. Completed anchor names remain visible; seeing a completed anchor
+again does not generate another completion event in the same calibration session.
+Each new anchor must meet its own observation requirement before receiving that
+status.
+
+Sustained incompatible anchors open an **Anchors disagree** prompt with the anchor
+names and discrepancy. Choose **Keep current calibration** to retain the room
+alignment and skip the rejected anchor for this session, or **Erase and calibrate
+from [anchor]** to clear the previous alignment and start with the chosen anchor.
+Only the phone's session calibration is erased; persistent anchor coordinates and
+room definitions are untouched. Before any alignment has completed, the prompt
+instead offers cancellation or choosing an anchor to start from. Significant
+conflicts require repeated observations; a single noisy frame does not trigger the
+choice. Independently coherent excluded boards are surfaced as conflicts rather
+than silently hidden by robust corner rejection. A conflict remains detectable
+when earlier short-window observations have aged out.

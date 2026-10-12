@@ -5,6 +5,63 @@
 	"objectVersion" = "56";
 	"archiveVersion" = "1";
 	"objects" = {
+		"E2D8B081D5FFD2BF7CF371CA" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/VisualAnchors.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"2860BB7F05D1807CB4567D04" = { "isa" = "PBXBuildFile"; "fileRef" = "E2D8B081D5FFD2BF7CF371CA"; };
+		"E10230B27CC191E98895070C" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/VisualAnchorCalibration.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"AA51695784275A9E98F294DC" = { "isa" = "PBXBuildFile"; "fileRef" = "E10230B27CC191E98895070C"; };
+		"023464E4F9F89F462F99810D" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/HCDetector.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"176317CC7807EA0C0D859AC5" = { "isa" = "PBXBuildFile"; "fileRef" = "023464E4F9F89F462F99810D"; };
+		"43186A6818957BDA4AEC3B46" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/apriltag.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"49646FC70D11C2BBDD015E57" = { "isa" = "PBXBuildFile"; "fileRef" = "43186A6818957BDA4AEC3B46"; };
+		"C941F4A60BD5389EC95ABDBF" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/apriltag_pose.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"9DD7A0FED769270E51D63FBD" = { "isa" = "PBXBuildFile"; "fileRef" = "C941F4A60BD5389EC95ABDBF"; };
+		"5D24C08A6EC152E331C16911" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/apriltag_quad_thresh.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"8760FA085097A86B8E7B9189" = { "isa" = "PBXBuildFile"; "fileRef" = "5D24C08A6EC152E331C16911"; };
+		"B6CB71F9CE66FAF16E02BD70" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/g2d.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"A808B7D0A798D9F63EDB56B8" = { "isa" = "PBXBuildFile"; "fileRef" = "B6CB71F9CE66FAF16E02BD70"; };
+		"645F900204FD520C2D8DB887" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/getopt.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"C2FF1923A6E08FFC08DB8366" = { "isa" = "PBXBuildFile"; "fileRef" = "645F900204FD520C2D8DB887"; };
+		"CF89E88F62B12FF394DDD19A" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/homography.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"1B0ED2BFCF41FF002D1D5B19" = { "isa" = "PBXBuildFile"; "fileRef" = "CF89E88F62B12FF394DDD19A"; };
+		"1929D135D01776BAF7227A96" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/image_u8.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"76CE6BA835936163BE8183DC" = { "isa" = "PBXBuildFile"; "fileRef" = "1929D135D01776BAF7227A96"; };
+		"F9332A37DEBBB5BAF9D049FC" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/image_u8_parallel.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"EBCFCD75B8BA861903255C33" = { "isa" = "PBXBuildFile"; "fileRef" = "F9332A37DEBBB5BAF9D049FC"; };
+		"E7143D2CC7E629F93CE1F8DB" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/image_u8x3.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"EA72F8942109B64FCC9BD778" = { "isa" = "PBXBuildFile"; "fileRef" = "E7143D2CC7E629F93CE1F8DB"; };
+		"1E01067ED7176FC92EF3729D" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/image_u8x4.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"2862960520A0E38793736B5C" = { "isa" = "PBXBuildFile"; "fileRef" = "1E01067ED7176FC92EF3729D"; };
+		"16E3DB749F3E3C05FCF91705" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/matd.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"0653207B0BF6331A9C9A3A4E" = { "isa" = "PBXBuildFile"; "fileRef" = "16E3DB749F3E3C05FCF91705"; };
+		"CF53774977B5E50295F4990B" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/pam.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"FEECDE56F07FE0B96CF97111" = { "isa" = "PBXBuildFile"; "fileRef" = "CF53774977B5E50295F4990B"; };
+		"49C6BC03068B93278E51EE62" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/pjpeg-idct.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"B773678735F45BFA2E1B35FE" = { "isa" = "PBXBuildFile"; "fileRef" = "49C6BC03068B93278E51EE62"; };
+		"63EFCB6AF7CFC7FAC9FC276B" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/pjpeg.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"2F6792D684184EA338148E97" = { "isa" = "PBXBuildFile"; "fileRef" = "63EFCB6AF7CFC7FAC9FC276B"; };
+		"9A728D7B6E6D85F4DAE822F7" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/pnm.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"401057B619D26ACFB9A1973F" = { "isa" = "PBXBuildFile"; "fileRef" = "9A728D7B6E6D85F4DAE822F7"; };
+		"682B6FCE0401AFEE67929EED" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/pthreads_cross.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"8583933930D1E2735F02A1DB" = { "isa" = "PBXBuildFile"; "fileRef" = "682B6FCE0401AFEE67929EED"; };
+		"D89BC77C58DC8F1AF0818468" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/string_util.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"13A95BA20E02B1E896F8F601" = { "isa" = "PBXBuildFile"; "fileRef" = "D89BC77C58DC8F1AF0818468"; };
+		"E8588885C1442D7767687E7F" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/svd22.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"7F0CF8359E9DE9B919820C06" = { "isa" = "PBXBuildFile"; "fileRef" = "E8588885C1442D7767687E7F"; };
+		"4F64A200514AC906979A005B" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/time_util.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"0AECC7AB447BDD5BB9F33BB7" = { "isa" = "PBXBuildFile"; "fileRef" = "4F64A200514AC906979A005B"; };
+		"2A0FDCEF2DA3DEB8B0BDE97B" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/unionfind.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"41EB6C2AFCE9678DA3051487" = { "isa" = "PBXBuildFile"; "fileRef" = "2A0FDCEF2DA3DEB8B0BDE97B"; };
+		"DDA7C8F18A8406B89F2A4C0D" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/workerpool.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"08B10EE6DE716764AE46C010" = { "isa" = "PBXBuildFile"; "fileRef" = "DDA7C8F18A8406B89F2A4C0D"; };
+		"3AC9CB4DF806E29C2E203706" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/zarray.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"7356CFCE4577BD8F3EB9D9B3" = { "isa" = "PBXBuildFile"; "fileRef" = "3AC9CB4DF806E29C2E203706"; };
+		"902755258A0A935E2B20D0C4" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/zhash.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"6D39A8C9E28670EBA1F7052F" = { "isa" = "PBXBuildFile"; "fileRef" = "902755258A0A935E2B20D0C4"; };
+		"02C6BDC7A3B7238086BF597D" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/common/zmaxheap.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"B63C5F7258ADE7697D1968F6" = { "isa" = "PBXBuildFile"; "fileRef" = "02C6BDC7A3B7238086BF597D"; };
+		"B660DB1FA7F3F48D3AC38D5E" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/V1/AprilTag/tag36h11.c"; "lastKnownFileType" = "sourcecode.c.c"; "sourceTree" = "SOURCE_ROOT"; };
+		"B176DA0BA156BA151D918ADF" = { "isa" = "PBXBuildFile"; "fileRef" = "B660DB1FA7F3F48D3AC38D5E"; };
+
 		"CD787BABA4B740D8B8640909" = { "isa" = "PBXFileReference"; "path" = "SpatialAwarenessView.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
 		"644FEBA5199A4EBE8E437879" = { "isa" = "PBXBuildFile"; "fileRef" = "CD787BABA4B740D8B8640909"; };
 		"CFD98D17E394474CA7CA36B7" = { "isa" = "PBXFileReference"; "path" = "SpatialCalibration.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
@@ -474,6 +531,34 @@
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"2860BB7F05D1807CB4567D04",
+				"AA51695784275A9E98F294DC",
+				"176317CC7807EA0C0D859AC5",
+				"49646FC70D11C2BBDD015E57",
+				"9DD7A0FED769270E51D63FBD",
+				"8760FA085097A86B8E7B9189",
+				"A808B7D0A798D9F63EDB56B8",
+				"C2FF1923A6E08FFC08DB8366",
+				"1B0ED2BFCF41FF002D1D5B19",
+				"76CE6BA835936163BE8183DC",
+				"EBCFCD75B8BA861903255C33",
+				"EA72F8942109B64FCC9BD778",
+				"2862960520A0E38793736B5C",
+				"0653207B0BF6331A9C9A3A4E",
+				"FEECDE56F07FE0B96CF97111",
+				"B773678735F45BFA2E1B35FE",
+				"2F6792D684184EA338148E97",
+				"401057B619D26ACFB9A1973F",
+				"8583933930D1E2735F02A1DB",
+				"13A95BA20E02B1E896F8F601",
+				"7F0CF8359E9DE9B919820C06",
+				"0AECC7AB447BDD5BB9F33BB7",
+				"41EB6C2AFCE9678DA3051487",
+				"08B10EE6DE716764AE46C010",
+				"7356CFCE4577BD8F3EB9D9B3",
+				"6D39A8C9E28670EBA1F7052F",
+				"B63C5F7258ADE7697D1968F6",
+				"B176DA0BA156BA151D918ADF",
 				"644FEBA5199A4EBE8E437879",
 				"64EF0B8FF8B34A2EB8C37C63",
 				"DD750DAAC900422BB4E2C78E",
@@ -969,6 +1054,34 @@
 			"isa" = "PBXGroup";
 			"sourceTree" = "<group>";
 			"children" = (
+				"E2D8B081D5FFD2BF7CF371CA",
+				"E10230B27CC191E98895070C",
+				"023464E4F9F89F462F99810D",
+				"43186A6818957BDA4AEC3B46",
+				"C941F4A60BD5389EC95ABDBF",
+				"5D24C08A6EC152E331C16911",
+				"B6CB71F9CE66FAF16E02BD70",
+				"645F900204FD520C2D8DB887",
+				"CF89E88F62B12FF394DDD19A",
+				"1929D135D01776BAF7227A96",
+				"F9332A37DEBBB5BAF9D049FC",
+				"E7143D2CC7E629F93CE1F8DB",
+				"1E01067ED7176FC92EF3729D",
+				"16E3DB749F3E3C05FCF91705",
+				"CF53774977B5E50295F4990B",
+				"49C6BC03068B93278E51EE62",
+				"63EFCB6AF7CFC7FAC9FC276B",
+				"9A728D7B6E6D85F4DAE822F7",
+				"682B6FCE0401AFEE67929EED",
+				"D89BC77C58DC8F1AF0818468",
+				"E8588885C1442D7767687E7F",
+				"4F64A200514AC906979A005B",
+				"2A0FDCEF2DA3DEB8B0BDE97B",
+				"DDA7C8F18A8406B89F2A4C0D",
+				"3AC9CB4DF806E29C2E203706",
+				"902755258A0A935E2B20D0C4",
+				"02C6BDC7A3B7238086BF597D",
+				"B660DB1FA7F3F48D3AC38D5E",
 				"CFD98D17E394474CA7CA36B7",
 				"15C075E052B949CE90867C80",
 				"CBFD05231A0043D8BFC0E30E",

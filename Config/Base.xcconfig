@@ -9,3 +9,7 @@ HOME_CORTEX_BUNDLE_IDENTIFIER = com.jiankuang.homecortex
 
 // Optional machine-local signing settings. Never commit the real file.
 #include? "Signing.local.xcconfig"
+
+// Local AprilTag detector shares raw ARKit frames; no separate camera session.
+SWIFT_OBJC_BRIDGING_HEADER = $(SRCROOT)/home-cortex-apple/Core/V1/HomeCortex-Bridging-Header.h
+HEADER_SEARCH_PATHS = $(inherited) $(SRCROOT)/home-cortex-apple/Core/V1/AprilTag

@@ -11,6 +11,7 @@ struct LocalizationSpaceOption: Decodable, Identifiable, Sendable {
     let references: [LocalizationReferenceOption]
     let can_manage: Bool
     let frame_definition: JSONValue?
+    var anchor_boards: VisualAnchorCatalog? = nil
     var id: String { space_id }
     var displayName: String {
         if case .string(let text) = name { return text }

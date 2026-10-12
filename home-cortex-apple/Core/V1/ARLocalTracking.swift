@@ -104,6 +104,25 @@ import UniformTypeIdentifiers
         }
         return true
     }
+    func visualFrame() throws -> VisualFrame {
+        guard running, state == .unanchored, let worldID, let frame = session.currentFrame,
+              case .normal = frame.camera.trackingState, let time = measurementTime(frame.timestamp) else {
+            throw CalibrationError.tracking
+        }
+        let pixels = frame.capturedImage
+        guard CVPixelBufferGetPlaneCount(pixels) >= 1 else { throw CalibrationError.tracking }
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        let width = CVPixelBufferGetWidthOfPlane(pixels, 0), height = CVPixelBufferGetHeightOfPlane(pixels, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(pixels, 0)
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixels, 0), width > 0, height > 0,
+              width <= 8192, height <= 8192, stride >= width else { throw CalibrationError.tracking }
+        let k = frame.camera.intrinsics
+        return VisualFrame(pixels: Data(bytes: base, count: stride*height), width: width, height: height, stride: stride,
+            intrinsics: VisualIntrinsics(fx: Double(k.columns.0.x), fy: Double(k.columns.1.y),
+                cx: Double(k.columns.2.x), cy: Double(k.columns.2.y)),
+            worldFromARCamera: try RigidTransform(matrix: frame.camera.transform), worldID: worldID, measuredAt: time)
+    }
     nonisolated func sessionWasInterrupted(_ session: ARSession) {
         Task { @MainActor in self.cameraPose = nil; self.measuredAt = nil; self.state = .relocalizationRequired; self.reason = "Camera/session interrupted; recalibration required" }
     }
