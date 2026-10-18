@@ -20,7 +20,7 @@ final class EmbodimentController {
     private(set) var localizationReferenceMessage: String?
     var selectedLocalizationSpaceID = "" {
         didSet {
-            if let body = embodimentID { preferences.set(selectedLocalizationSpaceID, forKey: "HomeCortex.localization.space." + body) }
+            if let body = embodimentID { preferences.set(selectedLocalizationSpaceID, .space, body: body) }
         }
     }
     var selectedLocalizationSpace: LocalizationSpaceOption? {
@@ -30,9 +30,10 @@ final class EmbodimentController {
     var selectedCamera = true
     var selectedMotion = false
     private(set) var setupMessage: String?
-    @ObservationIgnored private let preferences: UserDefaults
+    @ObservationIgnored private let preferences: EmbodimentPreferences
     @ObservationIgnored private var setupAttempt: EmbodimentSetupAttempt?
-    @ObservationIgnored private let attemptKey = "HomeCortex.embodiment.setup-attempt"
+    private(set) var setupRecovery = EmbodimentSetupRecovery.resume
+    @ObservationIgnored private var runtimeSelection = EmbodimentRuntimeSelection.stopped
     @ObservationIgnored private let store: any DeviceCredentialStoring
     @ObservationIgnored private var foreground = true
     @ObservationIgnored private var generation = 0
@@ -40,7 +41,7 @@ final class EmbodimentController {
 
     init(store: any DeviceCredentialStoring = KeychainCredentialStore(purpose: .device),
          factory: ConnectionController.TransportFactory? = nil, preferences: UserDefaults = .standard) {
-        self.preferences = preferences
+        self.preferences = EmbodimentPreferences(storage: preferences)
         self.store = store
         let camera = NativeStillImageCapture()
         localization = LocalizationRuntime(camera: camera)
@@ -49,33 +50,35 @@ final class EmbodimentController {
         inspection = InspectionPublisher(camera: camera)
         connection = ConnectionController(store: store, purpose: .device, automaticallyConnect: false, manifestProvider: { vision.manifest }, factory: factory)
         retainedBody = try? store.retainedEmbodiment()
-        if let body = retainedBody ?? connection.credential?.embodimentID,
-           let data = preferences.data(forKey: "HomeCortex.localization.pending." + body) {
-            pendingReferenceSave = try? JSONDecoder().decode(PendingReferenceSave.self, from: data)
+        if let body = retainedBody ?? connection.credential?.embodimentID {
+            pendingReferenceSave = self.preferences.load(PendingReferenceSave.self, .pendingReference, body: body)
         }
-        if let data = preferences.data(forKey: attemptKey) { setupAttempt = try? JSONDecoder().decode(EmbodimentSetupAttempt.self, from: data) }
-        vision.configured = connection.credential?.visionObserveGranted == true
-        if let body = connection.credential?.embodimentID,
-           let data = preferences.data(forKey: "HomeCortex.embodiment.configuration." + body) {
-            serverConfiguration = try? JSONDecoder().decode(EmbodimentConfiguration.self, from: data)
+        setupAttempt = self.preferences.load(EmbodimentSetupAttempt.self, .attempt)
+        if let body = connection.credential?.embodimentID {
+            serverConfiguration = self.preferences.load(EmbodimentConfiguration.self, .configuration, body: body)
         }
         do { runtimeEnabled = try store.runtimeEnabled() }
         catch { self.error = error as? ClientFailure ?? .invalidCertificate }
+        vision.configured = cameraSelected
     }
     var embodimentID: String? { connection.credential?.embodimentID ?? retainedBody }
     var isEnabled: Bool { embodimentID != nil }
     var isOnline: Bool { runtimeEnabled && connection.displayedState == .connected }
 
     var hasSavedSetup: Bool { setupAttempt != nil }
-    var canStartNewAttempt: Bool { setupAttempt == nil || setupMessage?.contains("Setup expired.") == true }
-    var cameraSelected: Bool { serverConfiguration?.cameraEnabled ?? (connection.credential?.visionObserveGranted == true) }
+    var canStartNewAttempt: Bool { setupAttempt == nil || setupRecovery == .expired }
+    var cameraSelected: Bool {
+        guard let body = embodimentID,
+              serverConfiguration?.cameraEnabled ?? (connection.credential?.visionObserveGranted == true) else { return false }
+        return preferences.selected(.camera, body: body)
+    }
     var motionSelected: Bool {
         guard let body = embodimentID, serverConfiguration?.motionEnabled == true else { return false }
-        return preferences.object(forKey: "HomeCortex.motion.preference." + body) as? Bool ?? true
+        return preferences.selected(.motion, body: body)
     }
     var localizationSelected: Bool {
         guard let body = embodimentID, serverConfiguration?.localizationEnabled == true else { return false }
-        return preferences.object(forKey: "HomeCortex.localization.preference." + body) as? Bool ?? true
+        return preferences.selected(.localization, body: body)
     }
     var agentName: String { serverConfiguration?.agent_display_name ?? "Loading…" }
 
@@ -83,6 +86,7 @@ final class EmbodimentController {
         guard !onboarding.busy else { return }
         onboarding = .loadingOptions
         setupMessage = nil
+        setupRecovery = .resume
         do {
             let (transport, session, credential) = try caller.embodimentSetupAccess()
             setupOptions = try JSONDecoder().decode(EmbodimentSetupOptions.self,
@@ -105,9 +109,10 @@ final class EmbodimentController {
     func startNewAttempt() {
         guard !onboarding.busy, canStartNewAttempt else { return }
         setupAttempt = nil
-        preferences.removeObject(forKey: attemptKey)
+        preferences.remove(.attempt)
         onboarding = .notConfigured
         setupMessage = nil
+        setupRecovery = .resume
     }
     func refreshConfiguration(caller: ConnectionController) async {
         guard let body = embodimentID else { return }
@@ -115,20 +120,9 @@ final class EmbodimentController {
             let (transport, session, _) = try caller.embodimentSetupAccess()
             let configuration = try JSONDecoder().decode(EmbodimentConfiguration.self,
                 from: await transport.send("/embodiments/" + body, sessionID: session))
-            serverConfiguration = configuration
-            preferences.set(try JSONEncoder().encode(configuration), forKey: "HomeCortex.embodiment.configuration." + configuration.embodiment_id)
-            if connection.credential != nil {
-                try connection.updateDeviceCameraGrant(configuration.cameraEnabled)
-                vision.configured = configuration.cameraEnabled
-                if !configuration.cameraEnabled { inspection.stop(); vision.stop(); motion.stop(); localization.stop() }
-                else if foreground && runtimeEnabled { vision.start(connection: connection); inspection.start(connection: connection) }
-            }
-            motion.configured = motionSelected
-            if motionSelected && foreground && runtimeEnabled { motion.start(connection: connection); localization.configured = localizationSelected; localization.start(connection: connection) }
-            else { motion.stop() }
-            localization.configured = localizationSelected
-            if localizationSelected && foreground && runtimeEnabled { localization.start(connection: connection) } else { localization.stop() }
-            if connection.credential != nil { setupAttempt = nil; preferences.removeObject(forKey: attemptKey) }
+            try applyConfiguration(configuration, expectedBody: body)
+            reconcileRuntimes()
+            if connection.credential != nil { setupAttempt = nil; preferences.remove(.attempt) }
         } catch { setupMessage = error.localizedDescription }
         await loadLocalizationReferences(caller: caller)
     }
@@ -142,11 +136,11 @@ final class EmbodimentController {
             localizationReferencePersonID = catalog.person_id
             localizationSpaces = catalog.spaces.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
             if selectedLocalizationSpaceID.isEmpty {
-                selectedLocalizationSpaceID = preferences.string(forKey: "HomeCortex.localization.space." + body) ?? ""
+                selectedLocalizationSpaceID = preferences.string(.space, body: body) ?? ""
             }
             localizationReferenceMessage = nil
             if localization.calibration.reference == nil,
-               let id = preferences.string(forKey: "HomeCortex.localization.reference." + body),
+               let id = preferences.string(.reference, body: body),
                let space = selectedLocalizationSpace,
                let reference = space.references.first(where: { $0.id == id }) {
                 localization.calibration.referenceSaved(reference, spaceID: space.space_id)
@@ -159,7 +153,7 @@ final class EmbodimentController {
     }
     func rememberLocalizationReference(_ reference: LocalizationReferenceOption, spaceID: String) {
         selectedLocalizationSpaceID = spaceID
-        if let body = embodimentID { preferences.set(reference.id, forKey: "HomeCortex.localization.reference." + body) }
+        if let body = embodimentID { preferences.set(reference.id, .reference, body: body) }
         localization.calibration.referenceSaved(reference, spaceID: spaceID)
     }
     func saveLocalizationReference(_ reference: LocalizationReferenceOption, spaceID: String,
@@ -167,7 +161,7 @@ final class EmbodimentController {
         guard let body = embodimentID else { throw ClientFailure.configuration }
         let (transport, session, _) = try caller.embodimentSetupAccess()
         let pending = PendingReferenceSave(spaceID: spaceID, reference: reference, expectedRevision: expectedRevision, frameDefinition: frameDefinition)
-        preferences.set(try JSONEncoder().encode(pending), forKey: "HomeCortex.localization.pending." + body)
+        try preferences.save(pending, .pendingReference, body: body)
         pendingReferenceSave = pending
         let anchor = try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(reference))
         var payload: [String:JSONValue] = ["anchor": anchor, "expected_revision": .integer(Int64(expectedRevision))]
@@ -177,7 +171,7 @@ final class EmbodimentController {
         guard body == embodimentID else { throw ClientFailure.configuration }
         let saved = try JSONDecoder().decode(LocalizationReferenceOption.self, from: data)
         pendingReferenceSave = nil
-        preferences.removeObject(forKey: "HomeCortex.localization.pending." + body)
+        preferences.remove(.pendingReference, body: body)
         rememberLocalizationReference(saved, spaceID: spaceID)
         await loadLocalizationReferences(caller: caller)
         return saved
@@ -193,8 +187,9 @@ final class EmbodimentController {
                 clientID: credential.clientID, origin: transport.origin)
             guard attempt.clientID == credential.clientID, attempt.origin == transport.origin.absoluteString else { throw ClientFailure.configuration }
             setupAttempt = attempt
-            preferences.set(try JSONEncoder().encode(attempt), forKey: attemptKey)
+            try preferences.save(attempt, .attempt)
             setupMessage = nil
+            setupRecovery = .resume
             onboarding = .requestingPermissions
             if attempt.capabilities.contains("vision.observe") { await vision.requestPermission() }
             onboarding = .enrolling
@@ -214,7 +209,7 @@ final class EmbodimentController {
                 throw error ?? ClientFailure.transport
             }
             setupAttempt = nil
-            preferences.removeObject(forKey: attemptKey)
+            preferences.remove(.attempt)
             await refreshConfiguration(caller: caller)
             onboarding = .registering
         } catch { failSetup(error) }
@@ -222,20 +217,20 @@ final class EmbodimentController {
     func changeCamera(_ enabled: Bool, caller: ConnectionController) async {
         guard let body = embodimentID, !onboarding.busy else { return }
         onboarding = .requestingPermissions
+        if !enabled { preferences.set(false, .camera, body: body); reconcileRuntimes() }
         do {
             if enabled { await vision.requestPermission() }
             let (transport, session, _) = try caller.embodimentSetupAccess()
             let data = try JSONEncoder().encode(["capabilities": EmbodimentSetupAttempt.capabilities(camera: enabled)])
             let configuration = try JSONDecoder().decode(EmbodimentConfiguration.self,
                 from: await transport.send("/embodiments/" + body, sessionID: session, method: "PATCH", body: data))
-            inspection.stop(); vision.stop(); motion.stop(); localization.stop()
+            stopAllRuntimes()
             await connection.disconnect()
-            serverConfiguration = configuration
-            preferences.set(try JSONEncoder().encode(configuration), forKey: "HomeCortex.embodiment.configuration." + configuration.embodiment_id)
-            try connection.updateDeviceCameraGrant(configuration.cameraEnabled)
-            vision.configured = configuration.cameraEnabled
-            if runtimeEnabled { enableRuntime() }
+            try applyConfiguration(configuration, expectedBody: body)
+            preferences.set(enabled, .camera, body: body)
+            if runtimeEnabled { enableRuntime() } else { reconcileRuntimes() }
             setupMessage = nil
+            setupRecovery = .resume
             onboarding = .enabled
         } catch { failSetup(error) }
     }
@@ -243,7 +238,7 @@ final class EmbodimentController {
         guard let body = embodimentID, !onboarding.busy else { return }
         onboarding = .enrolling
         // OFF immediately stops local work even if the server cannot be reached.
-        if !enabled { preferences.set(false, forKey: "HomeCortex.motion.preference." + body); motion.stop(); motion.configured = false }
+        if !enabled { preferences.set(false, .motion, body: body); reconcileRuntimes() }
         do {
             let (transport, session, _) = try caller.embodimentSetupAccess()
             let payload = JSONValue.object([
@@ -251,13 +246,11 @@ final class EmbodimentController {
                 "diagnostics": .array(updatedDiagnostics("orientation.local", enabled: enabled).map(JSONValue.string))])
             let configuration = try JSONDecoder().decode(EmbodimentConfiguration.self,
                 from: await transport.send("/embodiments/" + body, sessionID: session, method: "PATCH", body: JSONEncoder().encode(payload)))
-            motion.stop(); inspection.stop(); vision.stop()
+            stopAllRuntimes()
             await connection.disconnect()
-            serverConfiguration = configuration
-            preferences.set(try JSONEncoder().encode(configuration), forKey: "HomeCortex.embodiment.configuration." + body)
-            preferences.set(enabled, forKey: "HomeCortex.motion.preference." + body)
-            motion.configured = motionSelected
-            if runtimeEnabled { enableRuntime() }
+            try applyConfiguration(configuration, expectedBody: body)
+            preferences.set(enabled, .motion, body: body)
+            if runtimeEnabled { enableRuntime() } else { reconcileRuntimes() }
             setupMessage = nil; onboarding = .enabled
         } catch { failSetup(error) }
     }
@@ -269,7 +262,7 @@ final class EmbodimentController {
     func changeLocalization(_ enabled: Bool, caller: ConnectionController) async {
         guard let body = embodimentID, !onboarding.busy else { return }
         onboarding = .requestingPermissions
-        if !enabled { preferences.set(false, forKey: "HomeCortex.localization.preference." + body); localization.stop() }
+        if !enabled { preferences.set(false, .localization, body: body); reconcileRuntimes() }
         do {
             if enabled { await vision.requestPermission() }
             let (transport, session, _) = try caller.embodimentSetupAccess()
@@ -278,12 +271,11 @@ final class EmbodimentController {
                 "diagnostics": .array(updatedDiagnostics("localization.local", enabled: enabled).map(JSONValue.string))])
             let configuration = try JSONDecoder().decode(EmbodimentConfiguration.self,
                 from: await transport.send("/embodiments/" + body, sessionID: session, method: "PATCH", body: JSONEncoder().encode(payload)))
-            inspection.stop(); vision.stop(); motion.stop(); localization.stop()
+            stopAllRuntimes()
             await connection.disconnect()
-            serverConfiguration = configuration
-            preferences.set(try JSONEncoder().encode(configuration), forKey: "HomeCortex.embodiment.configuration." + body)
-            preferences.set(enabled, forKey: "HomeCortex.localization.preference." + body)
-            if runtimeEnabled { enableRuntime() }
+            try applyConfiguration(configuration, expectedBody: body)
+            preferences.set(enabled, .localization, body: body)
+            if runtimeEnabled { enableRuntime() } else { reconcileRuntimes() }
             setupMessage = nil; onboarding = .enabled
         } catch { failSetup(error) }
     }
@@ -296,6 +288,7 @@ final class EmbodimentController {
         } catch { setupMessage = "Runtime changed on this phone. Home Cortex could not record the change yet." }
     }
     private func failSetup(_ error: any Error) {
+        setupRecovery = (error as? EmbodimentSetupFailure)?.recovery ?? .resume
         setupMessage = error.localizedDescription
         onboarding = .failed(error.localizedDescription)
     }
@@ -312,7 +305,7 @@ final class EmbodimentController {
             if replacing {
                 guard invitation.visionObserveGranted, invitation.embodimentID == embodimentID else { throw ClientFailure.invalidInvitation }
                 if let body = embodimentID { try store.storeRetainedEmbodiment(body); retainedBody = body }
-                inspection.stop(); vision.stop(); motion.stop(); localization.stop()
+                stopAllRuntimes()
                 vision.configured = false
                 await connection.forgetCredential()
                 guard connection.credential == nil else { throw ClientFailure.invalidCertificate }
@@ -326,10 +319,7 @@ final class EmbodimentController {
             runtimeEnabled = true
             vision.configured = connection.credential?.visionObserveGranted == true
             connection.connect()
-            vision.start(connection: connection)
-            inspection.start(connection: connection)
-            motion.configured = motionSelected
-            motion.start(connection: connection); localization.configured = localizationSelected; localization.start(connection: connection)
+            reconcileRuntimes()
         } catch { self.error = error as? ClientFailure ?? .invalidInvitation }
     }
     func enableRuntime() {
@@ -340,12 +330,12 @@ final class EmbodimentController {
             error = nil
             connection.setForeground(foreground)
             connection.connect()
-            if foreground { vision.start(connection: connection); inspection.start(connection: connection); motion.configured = motionSelected; motion.start(connection: connection); localization.configured = localizationSelected; localization.start(connection: connection) }
+            reconcileRuntimes()
         } catch { self.error = error as? ClientFailure ?? .invalidCertificate }
     }
     func disableRuntime() async {
         generation += 1
-        inspection.stop(); vision.stop(); motion.stop(); localization.stop()
+        stopAllRuntimes()
         // Stop local authority even if the preference write or network fails.
         runtimeEnabled = false
         do { try store.storeRuntimeEnabled(false); error = nil }
@@ -354,15 +344,39 @@ final class EmbodimentController {
     }
     func setForeground(_ active: Bool) {
         foreground = active
-        if !active { generation += 1; inspection.stop(); vision.stop(); motion.stop(); localization.stop() }
+        if !active { generation += 1; stopAllRuntimes() }
         connection.setForeground(active)
-        if active && runtimeEnabled {
-            if connection.state == .disconnected { connection.connect() }
-            vision.start(connection: connection)
-            inspection.start(connection: connection)
-            motion.configured = motionSelected
-            motion.start(connection: connection); localization.configured = localizationSelected; localization.start(connection: connection)
-        }
+        if active && runtimeEnabled && connection.state == .disconnected { connection.connect() }
+        reconcileRuntimes()
     }
+    private func applyConfiguration(_ configuration: EmbodimentConfiguration, expectedBody: String) throws {
+        guard embodimentID == expectedBody, configuration.embodiment_id == expectedBody else { throw ClientFailure.invalidResponse }
+        if connection.credential != nil { try connection.updateDeviceCameraGrant(configuration.cameraEnabled) }
+        try preferences.save(configuration, .configuration, body: expectedBody)
+        serverConfiguration = configuration
+        vision.configured = cameraSelected
+    }
+
+    private func stopAllRuntimes() {
+        inspection.stop(); vision.stop(); motion.stop(); localization.stop()
+        runtimeSelection = .stopped
+    }
+
+    func reconcileRuntimes() {
+        let next = EmbodimentRuntimeSelection(foreground: foreground, enabled: runtimeEnabled,
+            credentialAvailable: connection.credential != nil, camera: cameraSelected,
+            motion: motionSelected, localization: localizationSelected)
+        vision.configured = cameraSelected
+        motion.configured = motionSelected
+        localization.configured = localizationSelected
+        if next.camera { vision.start(connection: connection); inspection.start(connection: connection) }
+        else if runtimeSelection.camera { inspection.stop(); vision.stop() }
+        if next.motion { motion.start(connection: connection) }
+        else if runtimeSelection.motion { motion.stop() }
+        if next.localization { localization.start(connection: connection) }
+        else if runtimeSelection.localization { localization.stop() }
+        runtimeSelection = next
+    }
+
     func reportImportError(_ error: any Error) { self.error = error as? ClientFailure ?? .invalidInvitation }
 }

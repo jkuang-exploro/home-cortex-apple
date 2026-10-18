@@ -6,7 +6,7 @@ private let transcript = Data("""
 """.utf8)
 
 private actor ChatStub: ConversationTransport {
-    enum Mode { case success, timeout, suspended, empty }
+    enum Mode { case success, timeout, suspended, empty, manyDeltas, partial }
     var mode = Mode.success
     var sends: [String] = []
     var histories: [String] = []
@@ -29,6 +29,12 @@ private actor ChatStub: ConversationTransport {
         switch mode {
         case .timeout: throw URLError(.timedOut)
         case .suspended: try await Task.sleep(for: .seconds(60))
+        case .manyDeltas:
+            for _ in 0..<1_000 { try await receive(.delta("中🌏")) }
+            try await receive(.complete)
+        case .partial:
+            try await receive(.delta("Received text 🌏"))
+            try await Task.sleep(for: .seconds(60))
         case .empty: try await receive(.complete)
         case .success:
             try await receive(.delta("您是"))
@@ -39,6 +45,36 @@ private actor ChatStub: ConversationTransport {
 }
 
 final class ConversationTests: XCTestCase {
+    @MainActor func testManyDeltasPreserveUnicodeWithFewTranscriptUpdates() async throws {
+        let stub = ChatStub()
+        await stub.setMode(.manyDeltas)
+        let controller = ConversationController(defaults: UserDefaults(suiteName: UUID().uuidString)!) {
+            ConversationAccess(clientID: "client:test", sessionID: "session:one", origin: URL(string: "https://example.test")!, transport: stub)
+        }
+        controller.load(); try await settle { controller.state == .ready }
+        let revision = controller.messageRevision
+        controller.draft = "Test"; controller.send()
+        try await settle { controller.state != .sending }
+        XCTAssertEqual(controller.messages.last?.content, String(repeating: "中🌏", count: 1_000))
+        XCTAssertEqual(controller.messages.last?.state, .complete)
+        XCTAssertLessThan(controller.messageRevision - revision, 100)
+    }
+    @MainActor func testStopFlushesReceivedTextAndRejectsLateTurnWork() async throws {
+        let stub = ChatStub()
+        await stub.setMode(.partial)
+        let controller = ConversationController(defaults: UserDefaults(suiteName: UUID().uuidString)!) {
+            ConversationAccess(clientID: "client:test", sessionID: "session:one", origin: URL(string: "https://example.test")!, transport: stub)
+        }
+        controller.load(); try await settle { controller.state == .ready }
+        controller.draft = "Test"; controller.send()
+        try await settle { controller.messages.dropLast().last?.state == .sent }
+        controller.stop()
+        XCTAssertEqual(controller.messages.last?.content, "Received text 🌏")
+        XCTAssertEqual(controller.messages.last?.state, .failed(.interrupted, safeToRetry: false))
+        let revision = controller.messageRevision
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(controller.messageRevision, revision)
+    }
     func testByteStreamPreservesSSEBlankSeparatorsAndSplitUnicode() throws {
         let frames = [
             ": padding",

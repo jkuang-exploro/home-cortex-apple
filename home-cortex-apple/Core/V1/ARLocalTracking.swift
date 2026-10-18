@@ -21,6 +21,7 @@ import UniformTypeIdentifiers
     @ObservationIgnored private var uptimeOrigin = 0.0
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var capturing = false
+    @ObservationIgnored private var previewing = false
     @ObservationIgnored private var captureContinuation: CheckedContinuation<ARFrame, any Error>?
     @ObservationIgnored private var captureID = UUID()
     @ObservationIgnored private let encoder = ARImageEncoder()
@@ -105,6 +106,8 @@ import UniformTypeIdentifiers
         return true
     }
     func visualFrame() throws -> VisualFrame {
+        let interval = PerformanceInterval("FrameCopy")
+        defer { interval.end() }
         guard running, state == .unanchored, let worldID, let frame = session.currentFrame,
               case .normal = frame.camera.trackingState, let time = measurementTime(frame.timestamp) else {
             throw CalibrationError.tracking
@@ -143,6 +146,8 @@ import UniformTypeIdentifiers
                         "sequence": .integer(sequence), "camera_pose": cameraPose.diagnostic])
     }
     func freshImage(deadline: Date) async throws -> CapturedImage {
+        let interval = PerformanceInterval("FreshEvidenceCapture")
+        defer { interval.end() }
         guard running else { throw VisionFailure.unavailable }
         guard !capturing else { throw VisionFailure.busy }
         capturing = true; defer { capturing = false }
@@ -159,12 +164,31 @@ import UniformTypeIdentifiers
                              captureDuration: encodingStart.timeIntervalSince(requested), encodingDuration: Date().timeIntervalSince(encodingStart))
     }
     func previewImage() async throws -> InspectionImage {
+        guard !capturing, !previewing else { throw VisionFailure.busy }
         guard running, let frame = session.currentFrame, let time = measurementTime(frame.timestamp) else { throw VisionFailure.unavailable }
+        previewing = true; defer { previewing = false }
         let token = generation
         let image = try await encoder.encode(ARPixels(frame.capturedImage), capturedAt: time, maxSide: 640, limit: 98_304)
+        try Task.checkCancellation()
         guard token == generation else { throw VisionFailure.staleSession }
         return image
     }
+    func previewDisplayImage() async throws -> DisplayPreview {
+        guard !capturing, !previewing else { throw VisionFailure.busy }
+        guard running, let frame = session.currentFrame, let time = measurementTime(frame.timestamp) else { throw VisionFailure.unavailable }
+        previewing = true; defer { previewing = false }
+        let token = generation
+        let image = try await encoder.display(ARPixels(frame.capturedImage), capturedAt: time)
+        try Task.checkCancellation()
+        guard token == generation else { throw VisionFailure.staleSession }
+        return DisplayPreview(image: image, capturedAt: time)
+    }
+}
+
+struct DisplayPreview: @unchecked Sendable {
+    // Immutable CGImage; mutable camera buffers never cross into UI state.
+    let image: CGImage
+    let capturedAt: Date
 }
 
 private struct ARPixels: @unchecked Sendable {
@@ -174,15 +198,33 @@ private struct ARPixels: @unchecked Sendable {
 }
 private actor ARImageEncoder {
     private let context = CIContext(options: [.cacheIntermediates: false])
-    func encode(_ pixels: ARPixels, capturedAt: Date, maxSide: Double, limit: Int) throws -> InspectionImage {
+    private var previewTime: Date?
+    private var previewImage: CGImage?
+    private var previewJPEG: InspectionImage?
+
+    func display(_ pixels: ARPixels, capturedAt: Date) throws -> CGImage {
+        try render(pixels, capturedAt: capturedAt, maxSide: 640)
+    }
+    private func render(_ pixels: ARPixels, capturedAt: Date, maxSide: Double) throws -> CGImage {
+        if maxSide == 640, previewTime == capturedAt, let previewImage { return previewImage }
         let source = CIImage(cvPixelBuffer: pixels.buffer).oriented(.right)
         let factor = min(1, maxSide / max(source.extent.width, source.extent.height))
         let image = source.transformed(by: CGAffineTransform(scaleX: factor, y: factor))
         guard let cg = context.createCGImage(image, from: image.extent.integral) else { throw VisionFailure.internalError }
+        if maxSide == 640 { previewTime = capturedAt; previewImage = cg; previewJPEG = nil }
+        return cg
+    }
+    func encode(_ pixels: ARPixels, capturedAt: Date, maxSide: Double, limit: Int) throws -> InspectionImage {
+        let interval = PerformanceInterval("ARImageEncode")
+        defer { interval.end() }
+        if maxSide == 640, previewTime == capturedAt, let previewJPEG, previewJPEG.jpeg.count <= limit { return previewJPEG }
+        let cg = try render(pixels, capturedAt: capturedAt, maxSide: maxSide)
         let jpeg = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(jpeg, UTType.jpeg.identifier as CFString, 1, nil) else { throw VisionFailure.internalError }
         CGImageDestinationAddImage(destination, cg, [kCGImageDestinationLossyCompressionQuality: maxSide > 640 ? 0.75 : 0.6] as CFDictionary)
         guard CGImageDestinationFinalize(destination), jpeg.length <= limit else { throw VisionFailure.invalidArgument }
-        return InspectionImage(jpeg: jpeg as Data, capturedAt: capturedAt, width: cg.width, height: cg.height)
+        let result = InspectionImage(jpeg: jpeg as Data, capturedAt: capturedAt, width: cg.width, height: cg.height)
+        if maxSide == 640 { previewJPEG = result }
+        return result
     }
 }

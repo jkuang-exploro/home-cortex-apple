@@ -16,19 +16,11 @@ final class URLSessionV1Transport: V1Transport, @unchecked Sendable {
     init(origin: URL, hostname: String, trustedCAPEM: String, identity: IdentityMaterial? = nil) throws {
         self.origin = origin
         identityAvailable = identity != nil
-        delegate = TLSDelegate(origin: origin, hostname: hostname, anchors: try CertificateTools.certificates(pem: trustedCAPEM), identity: identity)
-        let config = URLSessionConfiguration.ephemeral
-        config.tlsMinimumSupportedProtocolVersion = .TLSv13
-        config.tlsMaximumSupportedProtocolVersion = .TLSv13
-        config.timeoutIntervalForRequest = 5
-        config.timeoutIntervalForResource = 10
-        config.waitsForConnectivity = false
-        config.urlCache = nil
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.urlCredentialStorage = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        let channel = try AuthenticatedHTTP.channel(origin: origin, hostname: hostname,
+            caPEM: trustedCAPEM, identity: identity, requestTimeout: 5, resourceTimeout: 10,
+            cachePolicy: .reloadIgnoringLocalCacheData)
+        session = channel.session
+        delegate = channel.delegate
     }
 
     deinit { session.invalidateAndCancel() }

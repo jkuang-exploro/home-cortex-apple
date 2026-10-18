@@ -59,6 +59,74 @@ final class SpatialLocalizationTests: XCTestCase {
 }
 
 final class VisualAnchorTests: XCTestCase {
+    func testPoseSolverPerformanceWithMultipleBoards() throws {
+        let wall = try transform(SIMD3(1,2,0.9), SIMD3(0,0,.pi/2))
+        let a = try board("board_a", start: 0, pose: wall)
+        let b = try board("board_b", start: 4, pose: wall.composed(with: transform(SIMD3(0.22,0,0))))
+        let tags = a + b
+        let camera = try wall.composed(with: transform(SIMD3(0.06,-0.03,0.8), SIMD3(0.16,0.12,.pi-0.1)))
+        let observed = try detections(tags, camera: camera, noise: 0.4)
+        XCTAssertEqual(try VisualPoseSolver.solve(tags: tags, detections: observed, intrinsics: k).tagCount, 8)
+        let catalog = try VisualPoseSolver.PreparedCatalog(tags: tags)
+        for _ in 0..<100 { _ = try VisualPoseSolver.solve(catalog: catalog, detections: observed, intrinsics: k) }
+        measure {
+            for _ in 0..<1_000 {
+                do { _ = try VisualPoseSolver.solve(catalog: catalog, detections: observed, intrinsics: k) }
+                catch { XCTFail("Benchmark solve failed: \(error)") }
+            }
+        }
+    }
+    @MainActor private func waitForRuntime(_ predicate: @MainActor () async -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while ContinuousClock.now < deadline {
+            if await predicate() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw ChatFailure.timeout
+    }
+    @MainActor func testSlowInspectionDoesNotStallLocalTracking() async throws {
+        let source = TestLocalizationCamera(), transport = SlowLocalizationTransport()
+        let runtime = LocalizationRuntime(camera: NativeStillImageCapture(), source: source)
+        runtime.configured = true
+        runtime.start(access: { LocalizationAccess(body: "embodiment:test", session: "session:one", transport: transport) }, active: { _ in true })
+        defer { runtime.stop() }
+        try await waitForRuntime {
+            let leases = await transport.leases
+            return leases == 1 && source.polls >= 3
+        }
+        let leaseCalls = await transport.leases
+        XCTAssertEqual(leaseCalls, 1)
+        let completed = await transport.completedLeases
+        XCTAssertEqual(completed, 0)
+        XCTAssertGreaterThanOrEqual(source.polls, 3)
+        runtime.stop()
+        let stopped = source.polls
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(source.polls, stopped)
+    }
+    @MainActor func testSlowDetectorDoesNotStallTrackingAndCannotRestoreStoppedCalibration() async throws {
+        let source = TestLocalizationCamera(), transport = SlowLocalizationTransport(), detector = SlowAnchorSolver()
+        let runtime = LocalizationRuntime(camera: NativeStillImageCapture(), source: source, detector: detector)
+        runtime.configured = true
+        runtime.start(access: { LocalizationAccess(body: "embodiment:test", session: "session:one", transport: transport) }, active: { _ in true })
+        defer { runtime.stop() }
+        try await waitForRuntime { source.polls > 0 }
+        try runtime.visualCalibration.begin(catalog: feedbackCatalog(), selectedBoards: ["board_a"], deviceSession: "session:one")
+        try await waitForRuntime {
+            let calls = await detector.calls
+            return calls == 1 && source.polls >= 3
+        }
+        let calls = await detector.calls
+        XCTAssertEqual(calls, 1)
+        let completed = await detector.completions
+        XCTAssertEqual(completed, 0)
+        XCTAssertGreaterThanOrEqual(source.polls, 3)
+        runtime.stop()
+        let generation = runtime.visualCalibration.generation
+        try await waitForRuntime { await detector.completions == 1 }
+        XCTAssertFalse(runtime.visualCalibration.aligned)
+        XCTAssertEqual(runtime.visualCalibration.generation, generation)
+    }
     private let k = VisualIntrinsics(fx: 900, fy: 910, cx: 640, cy: 480)
     private func transform(_ p: SIMD3<Double>, _ a: SIMD3<Double> = .zero) throws -> RigidTransform {
         try RigidTransform(rotation: IPhoneBodyFrame.quaternion(yaw: a.x, pitch: a.y, roll: a.z), translation: p)
@@ -177,9 +245,19 @@ final class VisualAnchorTests: XCTestCase {
         XCTAssertEqual(tags.count,4)
         let frame = VisualFrame(pixels:Data(pixels),width:640,height:480,stride:640,
             intrinsics:VisualIntrinsics(fx:800,fy:800,cx:320,cy:240),worldFromARCamera:try transform(.zero),worldID:"world:test",measuredAt:Date())
-        let result = try await VisualAnchorDetector().solve(frame:frame,tags:[tag])
+        let detector = VisualAnchorDetector()
+        let result = try await detector.solve(frame:frame,tags:[tag])
         XCTAssertEqual(result.tagCount,1)
         XCTAssertEqual(result.spaceFromOpticalCamera.translation.z,0.48,accuracy:0.02)
+        let resized = VisualTag(id: tag.id, boardID: tag.boardID, edge: tag.edge * 2, spaceFromTag: tag.spaceFromTag,
+            corners: tag.corners.map { $0 * 2 }, boardCenter: tag.boardCenter, boardNormal: tag.boardNormal)
+        let changed = try await detector.solve(frame: frame, tags: [resized])
+        XCTAssertEqual(changed.spaceFromOpticalCamera.translation.z, 0.96, accuracy: 0.04)
+        let short = VisualFrame(pixels: Data([255]), width: 640, height: 480, stride: 640, intrinsics: frame.intrinsics,
+            worldFromARCamera: frame.worldFromARCamera, worldID: frame.worldID, measuredAt: frame.measuredAt)
+        do { _ = try await detector.solve(frame: short, tags: [tag]); XCTFail("Short image buffer accepted") }
+        catch { guard case VisualAnchorError.catalog = error else { return XCTFail("Unexpected error: \(error)") } }
+
     }
 
     func testRealDetectorRecoversTiltedWallBoardFromPerspectivePixels() async throws {
@@ -377,5 +455,50 @@ final class VisualAnchorTests: XCTestCase {
         let result = try VisualPoseSolver.solve(tags:a+b,detections:detections(a+actualB,camera:camera),intrinsics:k)
         XCTAssertTrue(result.boardIDs.contains("board_b"))
         XCTAssertTrue(result.disagreements.contains { $0.boardID == "board_b" && $0.angleRadians > 12 * .pi/180 })
+    }
+}
+
+@MainActor private final class TestLocalizationCamera: LocalizationCamera, LocalizationTracking {
+    var localTracking: any LocalizationTracking { self }
+    var worldID: String? = "world:test"
+    var measuredAt: Date? = Date()
+    var cameraPose: RigidTransform? = try! RigidTransform(rotation: simd_quatd(angle: 0, axis: SIMD3(1,0,0)), translation: .zero)
+    var state = LocalizationState.unanchored
+    var polls = 0
+    func useTracking(_ enabled: Bool) async {}
+    func stopTracking() {}
+    func poll() -> Bool { polls += 1; measuredAt = Date(); return true }
+    func visualFrame() throws -> VisualFrame {
+        VisualFrame(pixels: Data([255]), width: 1, height: 1, stride: 1,
+            intrinsics: VisualIntrinsics(fx: 900, fy: 900, cx: 0, cy: 0),
+            worldFromARCamera: cameraPose!, worldID: worldID!, measuredAt: Date())
+    }
+    func diagnostic(body: String) -> JSONValue? { .object(["embodiment_id": .string(body)]) }
+}
+private actor SlowLocalizationTransport: InspectionTransport {
+    var leases = 0
+    var completedLeases = 0
+    private let gate = LatestValueChannel<Void>()
+    func send(bodyID: String, sessionID: String, frame: JSONValue?) throws -> JSONValue { .null }
+    func sendLocalization(bodyID: String, sessionID: String, diagnostic: JSONValue?) async throws -> JSONValue {
+        if diagnostic != nil { return .null }
+        leases += 1
+        var iterator = gate.stream.makeAsyncIterator()
+        _ = await iterator.next()
+        try Task.checkCancellation()
+        completedLeases += 1
+        return .object(["active": .bool(true), "fps": .integer(2), "expires_at": .string(V1Time.format(Date().addingTimeInterval(10)))])
+    }
+}
+private actor SlowAnchorSolver: VisualAnchorSolving {
+    var calls = 0
+    var completions = 0
+    private let gate = LatestValueChannel<Void>()
+    func solve(frame: VisualFrame, tags: [VisualTag]) async throws -> VisualSolution {
+        calls += 1
+        var iterator = gate.stream.makeAsyncIterator()
+        _ = await iterator.next() // Deliberately returns a result after cancellation.
+        completions += 1
+        return VisualSolution(spaceFromOpticalCamera: frame.worldFromARCamera, boardIDs: ["board_a"], tagCount: 1, rmse: 0)
     }
 }

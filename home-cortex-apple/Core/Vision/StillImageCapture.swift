@@ -30,6 +30,8 @@ struct InspectionImage: Sendable {
     private var trackingDesired = false
     private var ownershipGeneration = 0
     private var arPreview: Task<Void, Never>?
+    private var arPreviewFPS = 3
+    private var arPreviewDelivery: (@Sendable (InspectionImage) -> Void)?
     private var photographing = false
     private var unavailableUntil: Date?
     static func permissionFailure(_ status: AVAuthorizationStatus) -> VisionFailure? {
@@ -97,31 +99,33 @@ struct InspectionImage: Sendable {
         ownershipGeneration += 1
         let token = ownershipGeneration
         trackingDesired = enabled
-        if !enabled { tracking.stop(); arPreview?.cancel(); arPreview = nil; return }
+        if !enabled { tracking.stop(); arPreview?.cancel(); arPreview = nil; arPreviewDelivery = nil; return }
         guard availability == nil else { tracking.stop(); return }
         await engine.releaseCamera()
         guard token == ownershipGeneration, trackingDesired else { return }
         tracking.start()
     }
     func stopTracking() {
-        ownershipGeneration += 1; trackingDesired = false; tracking.stop(); arPreview?.cancel(); arPreview = nil
+        ownershipGeneration += 1; trackingDesired = false; tracking.stop(); arPreview?.cancel(); arPreview = nil; arPreviewDelivery = nil
     }
     func startPreview(fps: Int, deliver: @escaping @Sendable (InspectionImage) -> Void) async throws {
         if let availability { throw availability }
         if trackingDesired {
+            arPreviewFPS = max(1, min(5, fps))
+            arPreviewDelivery = deliver
             guard arPreview == nil else { return }
             arPreview = Task { [weak self] in
                 while !Task.isCancelled {
                     guard let self, trackingDesired else { return }
-                    if let image = try? await tracking.previewImage(), !Task.isCancelled { deliver(image) }
-                    do { try await Task.sleep(for: .milliseconds(1000 / max(1, min(5, fps)))) } catch { return }
+                    if let image = try? await tracking.previewImage(), !Task.isCancelled { arPreviewDelivery?(image) }
+                    do { try await Task.sleep(for: .milliseconds(1000 / arPreviewFPS)) } catch { return }
                 }
             }
             return
         }
         try await engine.preview(fps: fps, deliver: deliver)
     }
-    func stopPreview() { arPreview?.cancel(); arPreview = nil; engine.stopPreview() }
+    func stopPreview() { arPreview?.cancel(); arPreview = nil; arPreviewDelivery = nil; engine.stopPreview() }
 }
 
 /// Mutable AVFoundation state and encoding run on one bounded, serial camera queue.
@@ -274,6 +278,8 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         }
     }
     private static func jpeg(_ image: CGImage, quality: Double, limit: Int) throws -> Data {
+        let interval = PerformanceInterval("CameraJPEGEncode")
+        defer { interval.end() }
         let jpeg = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(jpeg, UTType.jpeg.identifier as CFString, 1, nil) else { throw VisionFailure.internalError }
         CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)

@@ -58,20 +58,10 @@ final class URLSessionSoftwareLogin: SoftwareLoginGateway, @unchecked Sendable {
     init(profile: LoginProfile) throws {
         try profile.configuration.validate()
         self.profile = profile
-        delegate = TLSDelegate(origin: profile.configuration.bootstrapEndpoint,
-            hostname: profile.configuration.serverHostname,
-            anchors: try CertificateTools.certificates(pem: profile.caPEM), identity: nil)
-        let config = URLSessionConfiguration.ephemeral
-        config.tlsMinimumSupportedProtocolVersion = .TLSv13
-        config.tlsMaximumSupportedProtocolVersion = .TLSv13
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 20
-        config.waitsForConnectivity = false
-        config.urlCache = nil
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.urlCredentialStorage = nil
-        session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        let channel = try AuthenticatedHTTP.channel(origin: profile.configuration.bootstrapEndpoint, hostname: profile.configuration.serverHostname,
+            caPEM: profile.caPEM, identity: nil, requestTimeout: 15, resourceTimeout: 20)
+        session = channel.session
+        delegate = channel.delegate
     }
     deinit { session.invalidateAndCancel() }
     func signIn(email: String, apiKey: String) async throws -> SoftwareLoginBootstrap {
@@ -90,12 +80,7 @@ final class URLSessionSoftwareLogin: SoftwareLoginGateway, @unchecked Sendable {
             guard !(300..<400).contains(response.statusCode) else { throw ClientFailure.authenticationRequired }
             guard (200..<300).contains(response.statusCode) else { throw ClientFailure.transport }
             guard response.mimeType == "application/json" else { throw ClientFailure.invalidResponse }
-            var data = Data()
-            for try await byte in bytes {
-                try Task.checkCancellation()
-                guard data.count < 131_072 else { throw ClientFailure.invalidResponse }
-                data.append(byte)
-            }
+            let data = try await AuthenticatedHTTP.read(bytes, limit: 131_072, failure: ClientFailure.invalidResponse)
             return try SoftwareLoginBootstrap(data: data, profile: profile)
         } catch let error as URLError {
             if Task.isCancelled { throw CancellationError() }

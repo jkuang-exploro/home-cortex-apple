@@ -24,19 +24,10 @@ final class URLSessionConversationTransport: ConversationTransport, @unchecked S
     private let delegate: TLSDelegate
     init(configuration: ClientConfiguration, caPEM: String, identity: IdentityMaterial) throws {
         origin = configuration.serverEndpoint
-        delegate = TLSDelegate(origin: origin, hostname: configuration.serverHostname,
-            anchors: try CertificateTools.certificates(pem: caPEM), identity: identity)
-        let config = URLSessionConfiguration.ephemeral
-        config.tlsMinimumSupportedProtocolVersion = .TLSv13
-        config.tlsMaximumSupportedProtocolVersion = .TLSv13
-        config.timeoutIntervalForRequest = 90
-        config.timeoutIntervalForResource = 180
-        config.waitsForConnectivity = false
-        config.urlCache = nil
-        config.httpCookieStorage = nil
-        config.httpShouldSetCookies = false
-        config.urlCredentialStorage = nil
-        session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        let channel = try AuthenticatedHTTP.channel(origin: origin, hostname: configuration.serverHostname,
+            caPEM: caPEM, identity: identity, requestTimeout: 90, resourceTimeout: 180)
+        session = channel.session
+        delegate = channel.delegate
     }
     deinit { session.invalidateAndCancel() }
     private func request(_ path: String, sessionID: String, body: Data? = nil) throws -> URLRequest {
@@ -66,13 +57,7 @@ final class URLSessionConversationTransport: ConversationTransport, @unchecked S
         let (bytes, raw) = try await session.bytes(for: request)
         let response = try validate(raw)
         guard response.mimeType == "application/json" else { throw ChatFailure.invalidResponse }
-        var data = Data()
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard data.count < 2_097_152 else { throw ChatFailure.invalidResponse }
-            data.append(byte)
-        }
-        return data
+        return try await AuthenticatedHTTP.read(bytes, limit: 2_097_152, failure: ChatFailure.invalidResponse)
     }
     func setActive(id: String, embodimentID: String?, sessionID: String) async throws -> ConversationDocument {
         guard ConversationDocument.validID(id) else { throw ChatFailure.invalidResponse }

@@ -9,7 +9,8 @@ enum ConversationState: Equatable {
 @MainActor @Observable
 final class ConversationController {
     private(set) var state: ConversationState = .idle
-    private(set) var messages: [ChatMessage] = []
+    private(set) var messages: [ChatMessage] = [] { didSet { messageRevision &+= 1 } }
+    private(set) var messageRevision = 0
     private(set) var activeEmbodimentID: String?
     private(set) var conversationID: String?
     var draft = ""
@@ -19,6 +20,16 @@ final class ConversationController {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var ownerKey: String?
+    @ObservationIgnored private var activeTurn: ActiveTurn?
+    @ObservationIgnored private var flushTask: Task<Void, Never>?
+    private struct ActiveTurn {
+        let userIndex: Int
+        let assistantIndex: Int
+        let userID: String
+        let assistantID: String
+        var byteCount = 0
+        var pendingText = ""
+    }
 
     init(defaults: UserDefaults = .standard, isConnected: @escaping @MainActor () -> Bool = { true },
          access: @escaping @MainActor () throws -> ConversationAccess) {
@@ -43,6 +54,7 @@ final class ConversationController {
         let context: ConversationAccess
         do { context = try access() }
         catch { state = .failed(ChatFailure.map(error)); return }
+        activeTurn = nil
         generation += 1
         let token = generation
         if ownerKey != context.selectionKey {
@@ -79,6 +91,7 @@ final class ConversationController {
         guard state == .ready, let id = conversationID else { return }
         let context: ConversationAccess
         do { context = try access() } catch { state = .failed(ChatFailure.map(error)); return }
+        activeTurn = nil
         generation += 1
         let token = generation
         state = .loading
@@ -112,11 +125,14 @@ final class ConversationController {
             return
         }
         guard let id = conversationID else { return }
+        activeTurn = nil
         generation += 1
         let token = generation
         let assistantID = UUID().uuidString
         messages.append(ChatMessage(id: userID, role: .user, content: content, state: .pending))
         messages.append(ChatMessage(id: assistantID, role: .assistant, content: "", state: .receiving))
+        activeTurn = ActiveTurn(userIndex: messages.count - 2, assistantIndex: messages.count - 1,
+            userID: userID, assistantID: assistantID)
         draft = ""
         state = .sending
         task = Task { [weak self] in
@@ -138,22 +154,51 @@ final class ConversationController {
     }
     private func receive(_ event: ConversationEvent, token: Int, userID: String, assistantID: String) throws {
         guard token == generation else { throw CancellationError() }
-        guard let user = messages.firstIndex(where: { $0.id == userID }),
-              let assistant = messages.firstIndex(where: { $0.id == assistantID }) else { throw ChatFailure.invalidResponse }
-        messages[user].state = .sent
+        guard let user = activeTurn?.userIndex, let assistant = activeTurn?.assistantIndex,
+              activeTurn?.userID == userID, activeTurn?.assistantID == assistantID,
+              messages.indices.contains(user), messages.indices.contains(assistant),
+              messages[user].id == userID, messages[assistant].id == assistantID else { throw ChatFailure.invalidResponse }
+        if messages[user].state != .sent { messages[user].state = .sent }
         switch event {
         case .delta(let text):
-            guard messages[assistant].content.utf8.count + text.utf8.count <= 1_048_576 else { throw ChatFailure.invalidResponse }
-            messages[assistant].content += text
+            let count = text.utf8.count
+            guard count <= 1_048_576 - (activeTurn?.byteCount ?? 0) else { throw ChatFailure.invalidResponse }
+            activeTurn?.byteCount += count
+            activeTurn?.pendingText.append(contentsOf: text)
+            if flushTask == nil {
+                flushTask = Task { [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(40)) } catch { return }
+                    guard let self, token == generation else { return }
+                    flushPendingText()
+                }
+            }
         case .complete:
-            guard !messages[assistant].content.isEmpty else { throw ChatFailure.invalidResponse }
+            guard (activeTurn?.byteCount ?? 0) > 0 else { throw ChatFailure.invalidResponse }
+            flushPendingText()
             messages[assistant].state = .complete
+            activeTurn = nil
         }
     }
+    private func flushPendingText() {
+        flushTask?.cancel(); flushTask = nil
+        guard var turn = activeTurn, !turn.pendingText.isEmpty,
+              messages.indices.contains(turn.assistantIndex), messages[turn.assistantIndex].id == turn.assistantID else { return }
+        messages[turn.assistantIndex].content += turn.pendingText
+        turn.pendingText = ""
+        activeTurn = turn
+    }
     private func failTurn(_ failure: ChatFailure, userID: String, assistantID: String) {
-        for index in messages.indices where messages[index].id == userID || messages[index].id == assistantID {
-            messages[index].state = .failed(failure, safeToRetry: false)
+        flushPendingText()
+        if let turn = activeTurn {
+            for index in [turn.userIndex, turn.assistantIndex] where messages.indices.contains(index) {
+                messages[index].state = .failed(failure, safeToRetry: false)
+            }
+        } else {
+            for index in messages.indices where messages[index].id == userID || messages[index].id == assistantID {
+                messages[index].state = .failed(failure, safeToRetry: false)
+            }
         }
+        activeTurn = nil
         state = .failed(failure)
     }
     func stop() {

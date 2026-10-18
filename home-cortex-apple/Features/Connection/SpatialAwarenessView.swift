@@ -196,8 +196,8 @@ struct VisualAnchorCalibrationView: View {
                 await embodiment.loadLocalizationReferences(caller: caller)
                 while !Task.isCancelled {
                     if embodiment.localization.camera.tracking.running,
-                       let image = try? await embodiment.localization.camera.tracking.previewImage() {
-                        preview = UIImage(data: image.jpeg)
+                       let image = try? await embodiment.localization.camera.tracking.previewDisplayImage() {
+                        preview = UIImage(cgImage: image.image)
                     } else { preview = nil }
                     do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
                 }

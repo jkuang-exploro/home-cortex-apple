@@ -21,19 +21,71 @@ private actor PreviewTransport: InspectionTransport {
     func count() -> Int { frames.count }
 }
 final class InspectionTests: XCTestCase {
+    func testLatestChannelRetainsOnlyNewestPendingValueAndFinishes() async {
+        let channel = LatestValueChannel<Int>()
+        for value in 0..<10_000 { channel.send(value) }
+        var iterator = channel.stream.makeAsyncIterator()
+        let value = await iterator.next()
+        XCTAssertEqual(value, 9_999)
+        channel.finish()
+        let end = await iterator.next()
+        XCTAssertNil(end)
+    }
+    func testBoundedHTTPReaderPreservesLimitAndCancellation() async throws {
+        func bytes() -> AsyncStream<UInt8> {
+            AsyncStream { continuation in
+                for byte: UInt8 in [0, 255, 2, 3, 4] { continuation.yield(byte) }
+                continuation.finish()
+            }
+        }
+        let value = try await AuthenticatedHTTP.read(bytes(), limit: 5, failure: ChatFailure.invalidResponse)
+        XCTAssertEqual(value, Data([0, 255, 2, 3, 4]))
+        do {
+            _ = try await AuthenticatedHTTP.read(bytes(), limit: 4, failure: ChatFailure.invalidResponse)
+            XCTFail("Oversized response was accepted")
+        } catch { XCTAssertEqual(error as? ChatFailure, .invalidResponse) }
+        let pending = AsyncStream<UInt8> { _ in }
+        let task = Task { try await AuthenticatedHTTP.read(pending, limit: 5, failure: ChatFailure.invalidResponse) }
+        task.cancel()
+        do { _ = try await task.value; XCTFail("Cancelled read succeeded") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
     private func image(_ sequence: Int = 0) -> InspectionImage {
         InspectionImage(jpeg: Data([0xff,0xd8,0xff,0xd9]), capturedAt: Date(), width: 360, height: 640)
     }
-    @MainActor func testClosedFrameContractIsSeparateFromEvidenceAndMailboxIsLatestOnly() throws {
+    @MainActor func testClosedFrameContractIsSeparateFromEvidenceAndMailboxIsLatestOnly() async throws {
         let value = try InspectionPublisher.frame(image(), body: "embodiment:phone", sequence: 4)
         let fields = try value.object(required: ["embodiment_id", "camera_id", "sequence", "captured_at", "width", "height", "mime_type", "media"])
         XCTAssertEqual(fields["camera_id"], .string("rear.main")); XCTAssertNil(fields["evidence_id"])
-        let mailbox = InspectionMailbox()
+        let channel = LatestValueChannel<InspectionImage>()
         var newest: InspectionImage?
-        for _ in 0..<10000 { let next = image(); newest = next; mailbox.put(next) }
-        XCTAssertEqual(mailbox.take()?.capturedAt, newest?.capturedAt)
-        XCTAssertNil(mailbox.take())
-        mailbox.put(image()); mailbox.clear(); XCTAssertNil(mailbox.take())
+        for _ in 0..<10000 { let next = image(); newest = next; channel.send(next) }
+        var iterator = channel.stream.makeAsyncIterator()
+        let latest = await iterator.next()
+        XCTAssertEqual(latest?.capturedAt, newest?.capturedAt)
+        channel.finish()
+        let end = await iterator.next()
+        XCTAssertNil(end)
+    }
+    @MainActor func testOldPreviewCallbackCannotPublishAfterStopAndRestart() async throws {
+        let camera = PreviewCamera(), transport = PreviewTransport()
+        let publisher = InspectionPublisher(camera: camera)
+        await transport.enable()
+        publisher.start(access: { ("embodiment:phone", "session:old", transport) }, active: { true })
+        try await Task.sleep(for: .milliseconds(80))
+        let oldSink = try XCTUnwrap(camera.sink)
+        publisher.stop()
+        publisher.start(access: { ("embodiment:phone", "session:new", transport) }, active: { true })
+        try await Task.sleep(for: .milliseconds(80))
+        oldSink(image())
+        try await Task.sleep(for: .milliseconds(50))
+        let oldCount = await transport.count()
+        XCTAssertEqual(oldCount, 0)
+        camera.sink?(image())
+        try await Task.sleep(for: .milliseconds(80))
+        let count = await transport.count()
+        XCTAssertEqual(count, 1)
+        publisher.stop()
     }
     @MainActor func testIdleDoesNotOpenCameraAndPublishingStopsWithForeground() async throws {
         let camera = PreviewCamera(); let transport = PreviewTransport(); let publisher = InspectionPublisher(camera: camera)

@@ -122,32 +122,37 @@ struct LocalMotionAttitude: Sendable {
     @ObservationIgnored private var transport: (any InspectionTransport)?
     @ObservationIgnored private var sessionID: String?
     @ObservationIgnored private var bodyID: String?
-    @ObservationIgnored private var lastSent: Int64 = 0
+    @ObservationIgnored private var samples: LatestValueChannel<MotionSample>?
     @ObservationIgnored private var generation = 0
     func stop() {
         generation += 1
         worker?.cancel(); demandWorker?.cancel(); uploader?.cancel()
         worker = nil; demandWorker = nil; uploader = nil
+        samples?.finish(); samples = nil
         resetSession(); status = "Off"
     }
     private func resetSession() {
-        acquisition.stop(); expiresAt = .distantPast; sessionID = nil; bodyID = nil; transport = nil; lastSent = 0
+        acquisition.stop(); expiresAt = .distantPast; sessionID = nil; bodyID = nil; transport = nil
     }
     func start(connection: ConnectionController) {
         guard configured, worker == nil else { return }
         let token = generation
+        let samples = LatestValueChannel<MotionSample>()
+        self.samples = samples
         worker = Task(priority: .utility) { [weak self] in
             while !Task.isCancelled {
                 guard let self, token == generation else { return }
                 if !configured || connection.displayedState != .connected {
-                    resetSession(); status = configured ? "Waiting for DEVICE session" : "Off"
+                    if sessionID != nil { resetSession() }
+                    status = configured ? "Waiting for DEVICE session" : "Off"
                 } else if let session = connection.session?.sessionID, let body = connection.credential?.embodimentID {
                     if sessionID != session {
                         resetSession(); sessionID = session; bodyID = body
                         transport = try? connection.inspectionTransport(requireCamera: false)
                         acquisition.start()
                     }
-                    acquisition.poll(); status = acquisition.status
+                    if let value = acquisition.poll(), expiresAt > Date() { samples.send(MotionSample(session: session, value: value)) }
+                    status = acquisition.status
                 }
                 do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             }
@@ -164,25 +169,30 @@ struct LocalMotionAttitude: Sendable {
                            let expiry = try? V1Time.parse(fields.field("expires_at").string()), expiry > Date(), expiry.timeIntervalSinceNow <= 15 {
                             expiresAt = expiry
                         } else { expiresAt = .distantPast }
-                    } catch { if self.sessionID == sessionID { expiresAt = .distantPast } }
+                    } catch { if token == generation, self.sessionID == sessionID { expiresAt = .distantPast } }
                 }
                 do { try await Task.sleep(for: .seconds(1)) } catch { return }
             }
         }
         uploader = Task(priority: .utility) { [weak self] in
-            while !Task.isCancelled {
-                guard let self, token == generation else { return }
-                if configured, connection.displayedState == .connected, expiresAt > Date(),
-                   let sample = acquisition.latest, sample.sequence > lastSent, Date().timeIntervalSince(sample.measuredAt) < 0.3,
-                   let bodyID, let sessionID, let transport {
-                    lastSent = sample.sequence // Dropped on failure. Never retry or queue an old sample.
-                    do {
-                        _ = try await transport.sendOrientation(bodyID: bodyID, sessionID: sessionID, diagnostic: sample.diagnostic(body: bodyID))
-                        if token == generation && self.sessionID == sessionID { published += 1 }
-                    } catch { /* Lower priority diagnostics may drop; canonical operations remain independent. */ }
-                }
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            for await pending in samples.stream {
+                guard let self, token == generation, !Task.isCancelled else { return }
+                let sample = pending.value
+                guard configured, connection.displayedState == .connected, expiresAt > Date(),
+                      Date().timeIntervalSince(sample.measuredAt) >= 0,
+                      Date().timeIntervalSince(sample.measuredAt) < 0.3,
+                      let bodyID, let sessionID, pending.session == sessionID,
+                      sample.referenceID == acquisition.referenceID, let transport else { continue }
+                do {
+                    _ = try await transport.sendOrientation(bodyID: bodyID, sessionID: sessionID, diagnostic: sample.diagnostic(body: bodyID))
+                    if token == generation && self.sessionID == sessionID { published += 1 }
+                } catch { /* Drop; never retry or queue an old sample. */ }
             }
         }
     }
+}
+
+private struct MotionSample: Sendable {
+    let session: String
+    let value: LocalMotionAttitude
 }
