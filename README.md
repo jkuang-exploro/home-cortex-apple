@@ -453,3 +453,103 @@ conflicts require repeated observations; a single noisy frame does not trigger t
 choice. Independently coherent excluded boards are surfaced as conflicts rather
 than silently hidden by robust corner rejection. A conflict remains detectable
 when earlier short-window observations have aged out.
+
+## Object observation sessions (HC-E2-03)
+
+Embodiment → **Object observation diagnostic** starts a foreground 30–60 s scan.
+Fresh diagnostics default to local-only mode. Disable that switch explicitly
+after server setup to create/upload an observation session. The scan shares the
+existing camera owner, ARKit buffers and DEVICE TLS identity. Camera
+and runtime must be enabled. Existing snapshot/inspection/localization controls
+retain ownership and priority. No new V1 manifest capability is advertised.
+
+The initial default is **Manual diagnostic**: drag one box per object on the
+upright local preview. The selected frame stays fixed during the drag. Subsequent
+sightings use Vision optical tracking. **Automatic foreground (experimental)**
+uses Apple's `VNGenerateForegroundInstanceMaskRequest` revision 1, without labels,
+with a 960 px analysis image and nominal one sample per 1.5 s. It is a foreground
+subject segmenter, not a guaranteed inventory detector; unfamiliar, small,
+background, crowded and occluded items can be missed or grouped. Apple supplies
+no per-instance objectness score here, so none is fabricated. Manual results use
+a different immutable producer profile. Simulator tests establish no detector
+recall, latency, hardware compatibility or resource baseline.
+
+Both modes use conservative one-to-one association, unique session-local track
+IDs, ≤4 s occlusion memory, a 12-candidate lifetime budget by default, and 1–3 crops
+per track. Optical continuations and geometric associations must also pass a
+fixed initial-crop RGB histogram rejection gate (32×32, eight bins/channel,
+mean distribution distance ≤0.20). This inexpensive heuristic rejects large
+appearance changes; lighting/view changes can split tracks, and similar colors
+can still pass. It does not establish identity. Explicit new manual selections
+start separate tracks. Uncertain crossing/reacquisition can create duplicates. Content hashes,
+perceptual duplicate suppression, edge sharpness, mask occupancy, edge truncation
+and local-camera view diversity guide selection; these are heuristic proxies,
+not an occlusion/completeness guarantee. A 4% context margin is included in each
+object crop. Axis-aligned crop bounds and encoded dimensions describe the actual
+upright sampled plane. Boxes covering ≥85% of the frame are rejected. Complete
+frames are neither spooled nor uploaded.
+
+The server must enable `/vision/observations/v1`, grant this existing DEVICE/body
+publisher access to `camera:rear-primary`, and register these immutable profiles:
+
+```json
+[
+  {"id":"vision_producer:ios_manual_v1","pipeline_name":"ios-manual-diagnostic","pipeline_version":"1","detector_name":"manual-box+VNTrackObjectRequest","detector_version":"revision1"},
+  {"id":"vision_producer:ios_foreground_v1","pipeline_name":"ios-foreground-crops","pipeline_version":"1","detector_name":"VNGenerateForegroundInstanceMaskRequest+VNTrackObjectRequest","detector_version":"revision1"}
+]
+```
+
+For optional ARKit pose evidence, bind this embodiment to `camera:rear-primary`
+in `local_pose_cameras`. The additive `capture-poses` helper pins the exact fresh
+existing diagnostic before selection. References preserve the local world,
+tracking state, measurement time and unknown uncertainty. No household alignment,
+body extrinsic, depth or object position is inferred. Without ARKit or a confirmed
+pin, `camera_pose` is absent and the local report counts missing references. This
+is explicit unknown spatial evidence, not a substitute pose from a later frame.
+
+Selected evidence and stable operation/observation IDs persist in one bounded
+queue (≤8 MiB crop bytes / 16 MiB encoded file / 48 records), protected while the
+device is locked and excluded from backups. Server limits can lower selection
+bounds. Capture stops on interruption; recovery offers upload/cancel, never an
+automatic new scan. Four bounded network attempts reuse exact operation IDs,
+reacquiring the existing runtime session after reconnection. A recorded retryable
+batch rejection gets a new operation ID with unchanged observation ID/content.
+Completion requires both a terminal server acknowledgement and matching paginated
+inventory. Unconfirmed evidence remains queued until resolution or the earlier of
+server expiry and 15 minutes; foreground/startup cleanup enforces expiry. Process
+termination cannot guarantee that a remote open session is explicitly cancelled;
+its advertised server expiry remains authoritative.
+
+Use **Prepare diagnostic report** and share the JSON to collect per-frame times,
+processing latencies, track sightings, sampled process physical-memory footprint,
+battery endpoints, observed thermal states, crop bytes, logical successful upload
+payload bytes, upload failures, rejected optical associations, local diagnostic
+snapshots and confirmed inventory.
+Memory is a sampled lower bound on peak; upload bytes exclude TLS/HTTP framing,
+unsuccessful attempts and pose requests. Use server counters/Instruments for total
+wire volume and process peak. Review crop thumbnails, ground-truth misses,
+duplicates and merges separately for each proposal mode. The physical acceptance
+record is in the backend `.llm/epic2-ios-observation-results.md`.
+
+Physical baseline on iPhone 12 mini / iOS 26.7.1: two 60 s automatic trials
+processed 39 and 37 real frames and produced zero proposals/tracks/crops. Automatic
+room inventory is **not qualified** by those trials. The second trial observed
+serious thermal state while USB powered with existing ARKit tracking enabled;
+battery cost and attribution remain unmeasured. An optional app thermal budget slows sampling at fair state and stops at
+serious/critical state. At the user’s request, that app budget is now off by
+default; its diagnostic toggle can re-enable it. Temperature remains recorded
+and iOS thermal management is unchanged.
+The UI displays live thermal state and failure text beside Capture state.
+A later 14-second local Manual run retained one bottle across three reviewed
+crops (255,373 B); two crops clipped its cap. The earlier manual trial exposed a
+wrong-object tracking switch, leading to the appearance rejection gate above.
+These partial trials do not qualify the six-object/60-second room check or real
+server inventory; the user elected to stop with the current partial results.
+
+**Local experiment (no observation uploads)** supports manual/automatic camera
+experiments without creating an observation server session. Existing DEVICE
+connectivity and telemetry continue normally. Local completion is labeled as
+unuploaded; it is not server-inventory acceptance. Empty failed local experiments
+with no acquisition or evidence reset on relaunch. Captured evidence remains
+recoverable. Exported diagnostic JSON includes selected JPEG crops; share it only
+when intending to share that evidence. Complete source frames are excluded.

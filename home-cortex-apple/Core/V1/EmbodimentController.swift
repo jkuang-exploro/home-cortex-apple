@@ -8,6 +8,7 @@ final class EmbodimentController {
     let motion = MotionOrientationRuntime()
     let localization: LocalizationRuntime
     let inspection: InspectionPublisher
+    let observations: ObservationSessionManager
     let connection: ConnectionController
     private(set) var runtimeEnabled = false
     private(set) var error: ClientFailure?
@@ -48,6 +49,7 @@ final class EmbodimentController {
         let vision = VisionRuntime(camera: camera)
         self.vision = vision
         inspection = InspectionPublisher(camera: camera)
+        observations = ObservationSessionManager(camera: camera)
         connection = ConnectionController(store: store, purpose: .device, automaticallyConnect: false, manifestProvider: { vision.manifest }, factory: factory)
         retainedBody = try? store.retainedEmbodiment()
         if let body = retainedBody ?? connection.credential?.embodimentID {
@@ -344,6 +346,7 @@ final class EmbodimentController {
     }
     func setForeground(_ active: Bool) {
         foreground = active
+        if active { observations.reapExpired() }
         if !active { generation += 1; stopAllRuntimes() }
         connection.setForeground(active)
         if active && runtimeEnabled && connection.state == .disconnected { connection.connect() }
@@ -358,6 +361,7 @@ final class EmbodimentController {
     }
 
     private func stopAllRuntimes() {
+        observations.interrupt()
         inspection.stop(); vision.stop(); motion.stop(); localization.stop()
         runtimeSelection = .stopped
     }
@@ -370,7 +374,7 @@ final class EmbodimentController {
         motion.configured = motionSelected
         localization.configured = localizationSelected
         if next.camera { vision.start(connection: connection); inspection.start(connection: connection) }
-        else if runtimeSelection.camera { inspection.stop(); vision.stop() }
+        else if runtimeSelection.camera { observations.interrupt(); inspection.stop(); vision.stop() }
         if next.motion { motion.start(connection: connection) }
         else if runtimeSelection.motion { motion.stop() }
         if next.localization { localization.start(connection: connection) }

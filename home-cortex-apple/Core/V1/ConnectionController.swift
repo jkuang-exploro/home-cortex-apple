@@ -230,6 +230,15 @@ final class ConnectionController {
         credential = metadata
     }
 
+    func observationAccess() throws -> ObservationAccess {
+        guard purpose == .device, displayedState == .connected, let credential,
+              credential.purpose == .device, credential.visionObserveGranted == true,
+              let body = credential.embodimentID, let sessionID = session?.sessionID else { throw ClientFailure.authenticationRequired }
+        let transport = try URLSessionObservationTransport(configuration: credential.configuration,ca: credential.trustedCAPEM,
+            identity: store.identity(for: credential),body: body,session: sessionID)
+        return ObservationAccess(body: body,client: credential.clientID,origin: credential.configuration.serverEndpoint.absoluteString,transport: transport)
+    }
+
     func deviceTransport() throws -> any V1Transport {
         guard purpose == .device, displayedState == .connected, let credential, credential.purpose == .device else { throw ClientFailure.authenticationRequired }
         return try factory(credential.configuration, credential.trustedCAPEM, credential)

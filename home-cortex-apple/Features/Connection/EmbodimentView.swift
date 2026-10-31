@@ -34,6 +34,7 @@ struct EmbodimentView: View {
                         }
                     }
                 }
+                ObjectObservationView(manager: embodiment.observations,connection: embodiment.connection,enabled: embodiment.runtimeEnabled && embodiment.cameraSelected)
                 Toggle("Visual-inertial localization", isOn: Binding(get: { embodiment.localizationSelected }, set: { enabled in
                     if let caller { Task { await embodiment.changeLocalization(enabled, caller: caller) } }
                 })).disabled(caller?.displayedState != .connected || embodiment.onboarding.busy)
@@ -167,7 +168,7 @@ private struct EmbodimentSetupSheet: View {
                         LabeledContent("Camera", value: embodiment.selectedCamera ? "On" : "Off")
                         LabeledContent("Motion & Orientation", value: embodiment.selectedMotion ? "On" : "Off")
                         Text("Motion measures local device attitude while this app is open. Household calibration is not available yet.").font(.footnote)
-                        Text("Camera access lets your agent take a fresh photo when requested. iPhone will ask for permission next. You can continue if access is denied.")
+                        Text("Camera access supports requested photos and foreground object scans that you start. iPhone will ask for permission next. You can continue if access is denied.")
                         Button("Confirm") { Task { await embodiment.confirmSetup(caller: caller) } }.buttonStyle(.borderedProminent)
                     }
                 case .failed(let message):

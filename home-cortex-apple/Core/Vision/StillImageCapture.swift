@@ -24,7 +24,7 @@ struct InspectionImage: Sendable {
 }
 
 /// One camera session. Canonical photo exposures never reuse inspection samples.
-@MainActor final class NativeStillImageCapture: StillImageCapture, InspectionCamera {
+@MainActor final class NativeStillImageCapture: StillImageCapture, InspectionCamera, ObservationAcquiring {
     let tracking = ARLocalTracking()
     private let engine = CameraEngine()
     private var trackingDesired = false
@@ -94,6 +94,17 @@ struct InspectionImage: Sendable {
             throw error
         }
     }
+    func beginObservationAcquisition() async throws {
+        if let availability { throw availability }
+        if !trackingDesired { try await engine.beginObservationAcquisition() }
+    }
+    func endObservationAcquisition() { engine.endObservationAcquisition() }
+    func observationFrame(body: String) async throws -> ObservationFrame {
+        if let availability { throw availability }
+        if trackingDesired { return try await tracking.observationFrame(body: body) }
+        // One-shot sample of the existing video output; inspection sinks are never replaced.
+        return try await engine.sample()
+    }
     func cancel() { engine.cancelPhoto(); tracking.cancelCapture() }
     func useTracking(_ enabled: Bool) async {
         ownershipGeneration += 1
@@ -135,6 +146,9 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
     private let photoOutput = AVCapturePhotoOutput()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let context = CIContext(options: [.cacheIntermediates: false])
+    private var sampleContinuation: CheckedContinuation<ObservationFrame, any Error>?
+    private var sampleID = UUID()
+    private var observationDemand = false
     private var configured = false
     private var photoContinuation: CheckedContinuation<CapturedImage, any Error>?
     private var photoID: Int64?
@@ -172,6 +186,34 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         }
         if !session.isRunning { session.startRunning() }
         guard session.isRunning, !session.isInterrupted else { throw VisionFailure.unavailable }
+    }
+    func beginObservationAcquisition() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void,any Error>) in
+            queue.async {
+                do { try self.configure(); self.observationDemand = true; continuation.resume() }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+    func endObservationAcquisition() { queue.async { self.observationDemand = false; self.stopIfIdle() } }
+    func sample() async throws -> ObservationFrame {
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async {
+                    guard self.sampleContinuation == nil else { continuation.resume(throwing: VisionFailure.busy); return }
+                    self.sampleID = id; self.sampleContinuation = continuation
+                    do { try self.configure() } catch { self.finishSample(.failure(error)) }
+                    self.queue.asyncAfter(deadline: .now()+2) {
+                        if self.sampleID == id { self.finishSample(.failure(VisionFailure.timeout)) }
+                    }
+                }
+            }
+        } onCancel: { self.queue.async { if self.sampleID == id { self.finishSample(.failure(CancellationError())) } } }
+    }
+    private func finishSample(_ result: Result<ObservationFrame, any Error>) {
+        let pending = sampleContinuation; sampleContinuation = nil
+        stopIfIdle(); pending?.resume(with: result)
     }
     func preview(fps: Int, deliver: @escaping @Sendable (InspectionImage) -> Void) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
@@ -258,11 +300,11 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         continuation?.resume(with: result)
     }
     private func stopIfIdle() {
-        if previewSink == nil && photoContinuation == nil && session.isRunning { session.stopRunning() }
+        if !observationDemand && previewSink == nil && sampleContinuation == nil && photoContinuation == nil && session.isRunning { session.stopRunning() }
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         // Photo commands take priority. Late buffers are discarded by AVFoundation.
-        guard photoContinuation == nil, let sink = previewSink, Date().timeIntervalSince(lastPreview) >= previewInterval,
+        guard photoContinuation == nil, sampleContinuation != nil || (previewSink != nil && Date().timeIntervalSince(lastPreview) >= previewInterval),
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer), let clock = session.synchronizationClock else { return }
         let offset = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) - CMTimeGetSeconds(CMClockGetTime(clock))
         guard offset.isFinite, abs(offset) <= 2 else { return }
@@ -270,6 +312,14 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         lastPreview = Date()
         autoreleasepool {
             let source = CIImage(cvPixelBuffer: buffer)
+            if sampleContinuation != nil {
+                let factor = min(1,960 / max(source.extent.width,source.extent.height))
+                let sampled = source.transformed(by: CGAffineTransform(scaleX: factor,y: factor))
+                if let cg = context.createCGImage(sampled,from: sampled.extent.integral) {
+                    finishSample(.success(ObservationFrame(image: cg,capturedAt: captured,diagnostic: nil)))
+                } else { finishSample(.failure(VisionFailure.internalError)) }
+            }
+            guard let sink = previewSink else { return }
             let scale = min(1, 640 / max(source.extent.width, source.extent.height))
             let image = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
             guard let cg = context.createCGImage(image, from: image.extent.integral),

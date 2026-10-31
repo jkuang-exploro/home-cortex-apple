@@ -5,6 +5,23 @@
 	"objectVersion" = "56";
 	"archiveVersion" = "1";
 	"objects" = {
+		"966D2EB52CF2A43BC95A9834" = { "isa" = "PBXGroup"; "name" = "Object observations"; "sourceTree" = "<group>"; "children" = ("73C3360A071C738396016AC5","3795CC0C2C9D016C1856D92F","A7801A1C1EB5BBF890B362CF","957FA65358AD4AB3CC47A442","1A5169F594647D545E0B58B9","0E0CA7CC2136693752E2FC43","DCABA652776FCC563DD13495","00B6A59C27C56F11D7296B18"); };
+		"00B6A59C27C56F11D7296B18" = { "isa" = "PBXFileReference"; "path" = "home-cortex-appleTests/ObjectObservationTests.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"241F4979E20C9D557B62D2BA" = { "isa" = "PBXBuildFile"; "fileRef" = "00B6A59C27C56F11D7296B18"; };
+		"73C3360A071C738396016AC5" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/Observations/ObservationTracking.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"E8FF8D4904E253040E8D177B" = { "isa" = "PBXBuildFile"; "fileRef" = "73C3360A071C738396016AC5"; };
+		"3795CC0C2C9D016C1856D92F" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/Observations/ObservationSessionManager.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"A93B770617BEF30D78E1A377" = { "isa" = "PBXBuildFile"; "fileRef" = "3795CC0C2C9D016C1856D92F"; };
+		"A7801A1C1EB5BBF890B362CF" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/Observations/ObservationProcessor.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"BC1EAB9EB97C40B52230EA4E" = { "isa" = "PBXBuildFile"; "fileRef" = "A7801A1C1EB5BBF890B362CF"; };
+		"957FA65358AD4AB3CC47A442" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/Observations/ObservationModels.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"0FB8D10AED92FFEAEA9C0F7E" = { "isa" = "PBXBuildFile"; "fileRef" = "957FA65358AD4AB3CC47A442"; };
+		"1A5169F594647D545E0B58B9" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/Observations/ObservationQueue.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"B5BA0FA22D08A923A5287778" = { "isa" = "PBXBuildFile"; "fileRef" = "1A5169F594647D545E0B58B9"; };
+		"0E0CA7CC2136693752E2FC43" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/Observations/ObservationTransport.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"607DD941245D999D94022E48" = { "isa" = "PBXBuildFile"; "fileRef" = "0E0CA7CC2136693752E2FC43"; };
+		"DCABA652776FCC563DD13495" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Features/Connection/ObjectObservationView.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"E4A0A16C17B1D7FC4F30CC7A" = { "isa" = "PBXBuildFile"; "fileRef" = "DCABA652776FCC563DD13495"; };
 		"1D61E3A081712447D38E6862" = { "isa" = "PBXFileReference"; "path" = "PerformanceInterval.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
 		"AE64E80682EA661C2B37A19A" = { "isa" = "PBXBuildFile"; "fileRef" = "1D61E3A081712447D38E6862"; };
 		"6E3F99925E7B7F04450C77A6" = { "isa" = "PBXFileReference"; "path" = "LatestValueChannel.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "<group>"; };
@@ -200,6 +217,7 @@
 			"isa" = "PBXGroup";
 			"sourceTree" = "<group>";
 			"children" = (
+				"966D2EB52CF2A43BC95A9834",
 				"3C3B0F03DC089F93B8457928",
 				"0A300DBF3250EDF7A3D43A3C",
 				"0F2612BBE722F8B97292B1A7",
@@ -375,7 +393,7 @@
 				"SUPPORTS_MACCATALYST" = "NO";
 				"INFOPLIST_KEY_LSApplicationCategoryType" = "public.app-category.utilities";
 				"INFOPLIST_KEY_NSMotionUsageDescription" = "Measure local iPhone attitude while Motion & Orientation is enabled and Home Cortex is open.";
-				"INFOPLIST_KEY_NSCameraUsageDescription" = "Capture a fresh photo when Home Cortex requests vision from this iPhone embodiment.";
+				"INFOPLIST_KEY_NSCameraUsageDescription" = "Use the camera for requested photos, local spatial tracking, and foreground object scans that you start.";
 			};
 			"name" = "Debug";
 		};
@@ -554,6 +572,14 @@
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"E8FF8D4904E253040E8D177B",
+				"A93B770617BEF30D78E1A377",
+				"BC1EAB9EB97C40B52230EA4E",
+				"0FB8D10AED92FFEAEA9C0F7E",
+				"B5BA0FA22D08A923A5287778",
+				"607DD941245D999D94022E48",
+				"E4A0A16C17B1D7FC4F30CC7A",
+
 				"AE64E80682EA661C2B37A19A",
 				"9BBC362CD80112F3DDFDF6BA",
 				"458EFBF0A876F1C796E8512B",
@@ -716,6 +742,7 @@
 			"isa" = "PBXSourcesBuildPhase";
 			"buildActionMask" = "2147483647";
 			"files" = (
+				"241F4979E20C9D557B62D2BA",
 				"3451146EA57D4CE78C0DE3E8",
 				"BFA58B6FC9FF44D299696EB2",
 				"D1B7841EF8C54931B95941CC",
@@ -875,7 +902,7 @@
 				"SUPPORTS_MACCATALYST" = "NO";
 				"INFOPLIST_KEY_LSApplicationCategoryType" = "public.app-category.utilities";
 				"INFOPLIST_KEY_NSMotionUsageDescription" = "Measure local iPhone attitude while Motion & Orientation is enabled and Home Cortex is open.";
-				"INFOPLIST_KEY_NSCameraUsageDescription" = "Capture a fresh photo when Home Cortex requests vision from this iPhone embodiment.";
+				"INFOPLIST_KEY_NSCameraUsageDescription" = "Use the camera for requested photos, local spatial tracking, and foreground object scans that you start.";
 			};
 			"name" = "Release";
 		};

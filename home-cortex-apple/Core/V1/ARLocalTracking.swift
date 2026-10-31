@@ -135,15 +135,18 @@ import UniformTypeIdentifiers
     nonisolated func session(_ session: ARSession, didFailWithError error: any Error) {
         Task { @MainActor in self.stop(); self.reason = "ARKit session failed" }
     }
+    nonisolated static func opticalPose(_ arPose: RigidTransform) throws -> RigidTransform {
+        try arPose.composed(with: .opticalFromARCamera)
+    }
     func diagnostic(body: String) -> JSONValue? {
-        guard let worldID, let measuredAt, let cameraPose, Date().timeIntervalSince(measuredAt) < 0.3 else { return nil }
+        guard let worldID, let measuredAt, let cameraPose, let optical = try? Self.opticalPose(cameraPose), Date().timeIntervalSince(measuredAt) < 0.3 else { return nil }
         return .object(["embodiment_id": .string(body), "world_id": .string(worldID), "source": .string("ARKit"),
                         "reference_frame": .string("session_local_y_up"), "pose_frame": .string("camera_optical"),
                         "household_aligned": .bool(false), "uncertainty": .string("unknown"),
                         "tracking_state": .string(state.rawValue), "tracking_reason": .string(reason),
                         "reset_reason": .string(resetReason),
                         "publication_blocker": .string(publicationBlocker), "measured_at": .string(V1Time.format(measuredAt)),
-                        "sequence": .integer(sequence), "camera_pose": cameraPose.diagnostic])
+                        "sequence": .integer(sequence), "camera_pose": optical.diagnostic])
     }
     func freshImage(deadline: Date) async throws -> CapturedImage {
         let interval = PerformanceInterval("FreshEvidenceCapture")
@@ -162,6 +165,31 @@ import UniformTypeIdentifiers
         guard token == generation, Date() < deadline else { throw VisionFailure.timeout }
         return CapturedImage(jpeg: image.jpeg, capturedAt: time, cameraID: "camera:rear-primary", width: image.width, height: image.height,
                              captureDuration: encodingStart.timeIntervalSince(requested), encodingDuration: Date().timeIntervalSince(encodingStart))
+    }
+    func observationFrame(body: String) async throws -> ObservationFrame {
+        guard !capturing, running, let frame = session.currentFrame,
+              let time = measurementTime(frame.timestamp) else { throw VisionFailure.unavailable }
+        let token = generation
+        // The diagnostic and upright image describe exactly this ARFrame, not the latest poll.
+        var diagnostic: JSONValue?
+        if let worldID, let pose = try? Self.opticalPose(RigidTransform(matrix: frame.camera.transform)) {
+            let trackingState: LocalizationState
+            switch frame.camera.trackingState {
+            case .normal: trackingState = .unanchored
+            case .limited: trackingState = .limited
+            case .notAvailable: trackingState = .lost
+            }
+            diagnostic = .object(["embodiment_id": .string(body), "world_id": .string(worldID), "source": .string("ARKit"),
+                "reference_frame": .string("session_local_y_up"), "pose_frame": .string("camera_optical"),
+                "household_aligned": .bool(false), "uncertainty": .string("unknown"),
+                "tracking_state": .string(trackingState.rawValue), "tracking_reason": .string(String(describing: frame.camera.trackingState)),
+                "reset_reason": .string(resetReason), "publication_blocker": .string(publicationBlocker),
+                "measured_at": .string(V1Time.format(time)), "sequence": .integer(max(1,sequence)), "camera_pose": pose.diagnostic])
+        }
+        let image = try await encoder.observation(ARPixels(frame.capturedImage),capturedAt: time)
+        try Task.checkCancellation()
+        guard token == generation else { throw VisionFailure.staleSession }
+        return ObservationFrame(image: image,capturedAt: time,diagnostic: diagnostic)
     }
     func previewImage() async throws -> InspectionImage {
         guard !capturing, !previewing else { throw VisionFailure.busy }
@@ -202,6 +230,9 @@ private actor ARImageEncoder {
     private var previewImage: CGImage?
     private var previewJPEG: InspectionImage?
 
+    func observation(_ pixels: ARPixels, capturedAt: Date) throws -> CGImage {
+        try render(pixels,capturedAt: capturedAt,maxSide: 960)
+    }
     func display(_ pixels: ARPixels, capturedAt: Date) throws -> CGImage {
         try render(pixels, capturedAt: capturedAt, maxSide: 640)
     }

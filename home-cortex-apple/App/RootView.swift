@@ -43,6 +43,7 @@ struct RootView: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { connection.setForeground(true); embodiment.setForeground(true) }
                 else if phase == .background { connection.setForeground(false); embodiment.setForeground(false) }
+                else { embodiment.observations.interrupt() }
             }
     }
 }
