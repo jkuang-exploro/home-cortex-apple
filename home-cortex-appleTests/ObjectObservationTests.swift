@@ -15,13 +15,50 @@ private func patternedImage() -> CGImage {
     for y in stride(from: 0,to: 300,by: 10) { for x in stride(from: 0,to: 200,by: 10) where (x+y)%20 == 0 { ctx.fill(CGRect(x: x,y: y,width: 4,height: 4)) } }
     return ctx.makeImage()!
 }
+/// A real CGImage provider with one controllably slow read, used without production hooks.
+private final class SlowObservationPixels: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
+    let bytes = UnsafeMutablePointer<UInt8>.allocate(capacity: 256*256*4)
+    private let lock = NSLock()
+    private var firstRead = true
+    init() { bytes.initialize(repeating: 127,count: 256*256*4) }
+    deinit { bytes.deallocate() }
+    func pointer() -> UnsafeRawPointer {
+        let block = lock.withLock { let first = firstRead; firstRead = false; return first }
+        if block { entered.signal(); _ = resume.wait(timeout: .now() + .seconds(5)) }
+        return UnsafeRawPointer(bytes)
+    }
+    func didEnter() -> Bool { entered.wait(timeout: .now() + .seconds(2)) == .success }
+    func image() -> CGImage {
+        var callbacks = CGDataProviderDirectCallbacks(version: 0,
+            getBytePointer: { info in Unmanaged<SlowObservationPixels>.fromOpaque(info!).takeUnretainedValue().pointer() },
+            releaseBytePointer: { _,_ in }, getBytesAtPosition: nil,
+            releaseInfo: { info in Unmanaged<SlowObservationPixels>.fromOpaque(info!).release() })
+        let provider = CGDataProvider(directInfo: Unmanaged.passRetained(self).toOpaque(),size: 256*256*4,callbacks: &callbacks)!
+        return CGImage(width: 256,height: 256,bitsPerComponent: 8,bitsPerPixel: 32,bytesPerRow: 1024,
+            space: CGColorSpaceCreateDeviceRGB(),bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),provider: provider,decode: nil,shouldInterpolate: false,intent: .defaultIntent)!
+    }
+}
 @MainActor private final class ObservationTestCamera: ObservationAcquiring {
     var failure = false
     var frames = 0
+    var world: String?
+    var delayMS = 0
+    var trackingState: LocalizationState?
+    var failureType = VisionFailure.unavailable
+    var observationWorld: String? { world }
     func observationFrame(body: String) async throws -> ObservationFrame {
-        if failure { throw VisionFailure.unavailable }
+        if failure { throw failureType }
         frames += 1
-        return ObservationFrame(image: patternedImage(),capturedAt: Date(),diagnostic: nil)
+        let diagnostic = world.map { world -> JSONValue in
+            var fields: [String: JSONValue] = ["world_id": .string(world)]
+            if let trackingState { fields["tracking_state"] = .string(trackingState.rawValue) }
+            return .object(fields)
+        }
+        let frame = ObservationFrame(image: patternedImage(),capturedAt: Date(),diagnostic: diagnostic)
+        let delay = delayMS
+        if delay > 0 { await withCheckedContinuation { (continuation: CheckedContinuation<Void,Never>) in DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(delay)) { continuation.resume() } } } // Deliberately delivers a late cancelled frame.
+        return frame
     }
 }
 private actor ObservationTestTransport: ObservationTransport {
@@ -36,9 +73,12 @@ private actor ObservationTestTransport: ObservationTransport {
     var duplicateReceipts = false
     var corruptInventory = false
     var finalState = "OPEN"
+    var poseRequests = 0
+    func poseRequestCount() -> Int { poseRequests }
     func configure(lose: Bool = false,hard: Bool = false,duplicate: Bool = false,corrupt: Bool = false) { loseBatchReply = lose; hardFailure = hard; duplicateReceipts = duplicate; corruptInventory = corrupt }
     func snapshot() -> ([String],[String],Int,String) { (mediaIDs,batchIDs,observations.count,finalState) }
     func send(path: String,method: String,payload: JSONValue?,crop: Data?) async throws -> JSONValue {
+        if path.hasSuffix("/capture-poses") { poseRequests += 1; throw ObservationFailure.invalidResponse }
         if method == "GET" {
             return .object(["session_id": .string(session),"entries": .array(observations.map { observation in
                 var result = observation
@@ -234,23 +274,24 @@ final class ObjectObservationTests: XCTestCase {
         let (manager,_,_,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
         XCTAssertEqual(manager.phase,.idle); manager.begin(access: { access })
         try await wait { manager.phase == .capturing }; manager.finish()
-        try await wait { manager.phase == .completed }; XCTAssertEqual(manager.inventory.count,0); XCTAssertFalse(manager.hasQueue)
+        try await wait { manager.phase == .completed && !manager.busy }; XCTAssertEqual(manager.inventory.count,0); XCTAssertFalse(manager.hasQueue)
     }
     @MainActor func testInterruptedCaptureDoesNotRestartAndKeepsQueue() async throws {
         let (manager,camera,_,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
-        manager.begin(access: { access }); try await wait { manager.frame != nil }; manager.interrupt()
+        manager.begin(access: { access }); try await wait { manager.frame != nil }; manager.interrupt(); try await wait { !manager.busy }
         let count = camera.frames; try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(manager.phase,.failed); XCTAssertEqual(camera.frames,count)
         let recovered = ObservationSessionManager(camera: camera,store: store,thermalState: { 0 })
+        try await wait { recovered.phase != .idle || recovered.canBegin }
         XCTAssertTrue(recovered.hasQueue); XCTAssertEqual(recovered.phase,.failed)
         recovered.cancel(); recovered.retry(access: { access })
-        try await wait { recovered.phase == .cancelled }; XCTAssertNil(try store.load())
+        try await wait { recovered.phase == .cancelled && !recovered.busy }; XCTAssertNil(try store.load())
     }
     @MainActor func testLostReplyRetriesSameOperationWithoutDuplicateObservation() async throws {
         let (manager,_,transport,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
         await transport.configure(lose: true)
         try await captured(manager,access); let ids = manager.crops.map(\.id)
-        manager.finish(); try await wait({ manager.phase == .completed },seconds: 10)
+        manager.finish(); try await wait({ manager.phase == .completed && !manager.busy },seconds: 10)
         let snapshot = await transport.snapshot()
         XCTAssertEqual(snapshot.2,ids.count); XCTAssertEqual(Set(snapshot.1).count,ids.count); XCTAssertGreaterThan(snapshot.1.count,ids.count)
         XCTAssertEqual(manager.inventory.count,ids.count); XCTAssertNil(try store.load())
@@ -258,11 +299,12 @@ final class ObjectObservationTests: XCTestCase {
     @MainActor func testFailedUploadSurvivesRelaunchAndDuplicateAcknowledgement() async throws {
         let (manager,camera,transport,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
         await transport.configure(hard: true)
-        try await captured(manager,access); manager.finish(); try await wait { manager.phase == .failed }
+        try await captured(manager,access); manager.finish(); try await wait { manager.phase == .failed && !manager.busy }
         let saved = try XCTUnwrap(store.load())
         let recovered = ObservationSessionManager(camera: camera,store: store,thermalState: { 0 })
+        try await wait { recovered.phase != .idle || recovered.canBegin }
         await transport.configure(duplicate: true)
-        recovered.retry(access: { access }); try await wait { recovered.phase == .completed }
+        recovered.retry(access: { access }); try await wait { recovered.phase == .completed && !recovered.busy }
         let snapshot = await transport.snapshot()
         XCTAssertEqual(Set(snapshot.1),Set(saved.uploads.map(\.batchOperation))); XCTAssertEqual(snapshot.2,saved.uploads.count)
         XCTAssertEqual(recovered.acknowledged,saved.uploads.count)
@@ -272,13 +314,14 @@ final class ObjectObservationTests: XCTestCase {
         let manager = ObservationSessionManager(camera: camera,store: store,thermalState: { 2 })
         manager.thermalGuardEnabled = true
         manager.localOnly = true; manager.begin(access: { access })
-        try await wait { manager.phase == .failed }
+        try await wait { manager.phase == .failed && !manager.busy }
         XCTAssertEqual(camera.frames,0); XCTAssertTrue(manager.hasQueue)
         XCTAssertEqual(manager.metrics.captureFailures,1); XCTAssertEqual(manager.metrics.uploadFailures,0)
         XCTAssertTrue(manager.message?.contains("thermal") == true)
         let recovered = ObservationSessionManager(camera: camera,store: store,thermalState: { 0 })
+        try await wait { recovered.phase != .idle || recovered.canBegin }
         XCTAssertTrue(recovered.canBegin); XCTAssertTrue(recovered.localOnly); XCTAssertFalse(recovered.hasQueue)
-        manager.cancel(); XCTAssertEqual(manager.phase,.cancelled); XCTAssertFalse(manager.hasQueue)
+        manager.cancel(); try await wait { manager.phase == .cancelled && !manager.busy }; XCTAssertEqual(manager.phase,.cancelled); XCTAssertFalse(manager.hasQueue)
     }
     @MainActor func testUserCanDisableAppThermalBudgetForDiagnostics() async throws {
         let (_,camera,_,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
@@ -286,15 +329,16 @@ final class ObjectObservationTests: XCTestCase {
         manager.localOnly = true; manager.thermalGuardEnabled = false; manager.begin(access: { access })
         try await wait { manager.frame != nil }
         XCTAssertEqual(manager.phase,.capturing); XCTAssertGreaterThan(camera.frames,0)
-        manager.finish(); XCTAssertEqual(manager.phase,.completed)
+        manager.finish(); try await wait { manager.phase == .completed && !manager.busy }; XCTAssertEqual(manager.phase,.completed)
     }
     @MainActor func testLocalDiagnosticNeverCallsServerAndCanCancelOrComplete() async throws {
         let (manager,_,transport,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
         manager.localOnly = true
         try await captured(manager,access); manager.finish()
+        try await wait { manager.phase == .completed && !manager.busy }
         XCTAssertEqual(manager.phase,.completed); XCTAssertTrue(manager.inventory.isEmpty)
         let first = await transport.snapshot(); XCTAssertEqual(first.2,0); XCTAssertTrue(first.0.isEmpty)
-        manager.begin(access: { access }); try await wait { manager.phase == .capturing }; manager.cancel()
+        manager.begin(access: { access }); try await wait { manager.phase == .capturing }; manager.cancel(); try await wait { !manager.busy }
         XCTAssertEqual(manager.phase,.cancelled); XCTAssertFalse(manager.hasQueue)
     }
     @MainActor func testRejectedManualBoxReleasesHeldFrameAndAllowsAnotherSelection() async throws {
@@ -305,7 +349,7 @@ final class ObjectObservationTests: XCTestCase {
         XCTAssertTrue(manager.message?.contains("not accepted") == true)
         try await wait { camera.frames > before }
         manager.holdManualFrame(); manager.select(box); try await wait { !manager.crops.isEmpty }
-        manager.finish(); XCTAssertEqual(manager.phase,.completed)
+        manager.finish(); try await wait { manager.phase == .completed && !manager.busy }; XCTAssertEqual(manager.phase,.completed)
     }
     @MainActor func testCancellationConfirmsRemoteStateAndCleansQueue() async throws {
         let (manager,_,transport,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
@@ -316,10 +360,156 @@ final class ObjectObservationTests: XCTestCase {
     @MainActor func testCorruptInventoryCannotClaimCompletion() async throws {
         let (manager,_,transport,store,access) = try setup(); defer { try? FileManager.default.removeItem(at: store.directory) }
         await transport.configure(corrupt: true)
-        try await captured(manager,access); manager.finish(); try await wait { manager.phase == .failed }
+        try await captured(manager,access); manager.finish(); try await wait { manager.phase == .failed && !manager.busy }
         XCTAssertTrue(manager.hasQueue); XCTAssertFalse(manager.canCancel)
-        await transport.configure(); manager.retry(access: { access }); try await wait { manager.phase == .completed }
+        await transport.configure(); manager.retry(access: { access }); try await wait { manager.phase == .completed && !manager.busy }
     }
+    @MainActor func testSnapshotsAndLongCameraInterruptionPauseWithoutReplacingEvidence() async throws {
+        let (manager,camera,_,store,access) = try setup()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        manager.settings.sampleInterval = 1
+        try await captured(manager,access)
+        let original = try XCTUnwrap(store.load())
+        for failure in [VisionFailure.busy,.staleSession,.timeout,.unavailable] {
+            camera.failureType = failure; camera.failure = true
+            try await Task.sleep(for: .milliseconds(1600))
+            XCTAssertEqual(manager.phase,.capturing)
+        }
+        camera.failure = false
+        let before = camera.frames
+        try await wait { camera.frames > before }
+        let resumed = try XCTUnwrap(store.load())
+        XCTAssertEqual(resumed.startOperation,original.startOperation)
+        XCTAssertEqual(resumed.uploads.map(\.crop.id),original.uploads.map(\.crop.id))
+        XCTAssertEqual(resumed.uploads.map(\.batchOperation),original.uploads.map(\.batchOperation))
+        manager.finish(); try await wait { manager.phase == .completed && !manager.busy }
+    }
+    @MainActor func testWorldResetDiscardsHeldFrameAndDoesNotAttachMissingPose() async throws {
+        let (manager,camera,_,store,access) = try setup()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        camera.world = "world:one"; manager.settings.sampleInterval = 1
+        manager.begin(access: { access }); try await wait { manager.frame?.world == "world:one" }
+        manager.holdManualFrame(); camera.world = "world:two"; manager.select(box)
+        try await wait { manager.frame?.world == "world:two" }
+        XCTAssertTrue(manager.crops.isEmpty)
+        manager.holdManualFrame(); manager.select(box)
+        try await wait { !manager.crops.isEmpty }
+        XCTAssertTrue(manager.crops.allSatisfy { $0.pose == nil && $0.diagnostic == .object(["world_id": .string("world:two")]) })
+        manager.finish(); try await wait { manager.phase == .completed && !manager.busy }
+    }
+    @MainActor func testRepeatedLocalScanCancellationReleasesFrameAndAllowsRecovery() async throws {
+        let (manager,_,_,store,access) = try setup()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        manager.localOnly = true
+        for _ in 0..<8 {
+            manager.begin(access: { access }); try await wait { manager.frame != nil }
+            weak var retained = manager.frame?.image
+            manager.cancel(); try await wait { !manager.busy }
+            XCTAssertEqual(manager.phase,.cancelled); XCTAssertNil(manager.frame)
+            XCTAssertNil(retained); XCTAssertNil(try store.load())
+        }
+    }
+    func testAcknowledgedCropReleasesBytesAndPreservesWireAcrossRestart() throws {
+        var value = crop(bytes: 524288)
+        let wire = value.wire(session: "session:test",mode: .manual)
+        value.releaseMedia(); value.releaseMedia()
+        XCTAssertTrue(value.jpeg.isEmpty)
+        XCTAssertEqual(value.wire(session: "session:test",mode: .manual),wire)
+        let decoded = try JSONDecoder().decode(ObservationCrop.self,from: JSONEncoder().encode(value))
+        XCTAssertEqual(decoded.wire(session: "session:test",mode: .manual),wire)
+    }
+    func testCancelledProcessingDoesNotOfferCropsAndResetDropsPreviousGeneration() async throws {
+        let processor = ObservationProcessor()
+        let frame = ObservationFrame(image: patternedImage(),capturedAt: Date(),diagnostic: nil)
+        let manual = box
+        let work = Task { try Task.checkCancellation(); return try await processor.process(frame,mode: .manual,manual: [manual]) }
+        work.cancel()
+        do { _ = try await work.value; XCTFail("Cancelled frame accepted") } catch is CancellationError { }
+        await processor.reset(settings: ObservationSettings())
+        let empty = try await processor.process(frame,mode: .manual,manual: [])
+        XCTAssertTrue(empty.crops.isEmpty); XCTAssertEqual(empty.totalTracks,0)
+    }
+
+    @MainActor func testLateCancelledAcquisitionCannotReplaceNewScanFrame() async throws {
+        let (manager,camera,_,store,access) = try setup()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        manager.localOnly = true; camera.world = "world:old"; camera.delayMS = 1000
+        manager.begin(access: { access }); try await wait { camera.frames == 1 }
+        manager.cancel(); try await wait { !manager.busy }
+        camera.delayMS = 0; camera.world = "world:new"
+        manager.begin(access: { access }); try await wait { manager.frame != nil }
+        XCTAssertEqual(manager.frame?.world,"world:new")
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertEqual(manager.frame?.world,"world:new"); XCTAssertEqual(manager.phase,.capturing)
+        manager.cancel(); try await wait { !manager.busy }
+    }
+    @MainActor func testBurstStartsCreateOneAcquisitionWorker() async throws {
+        let (manager,camera,_,store,access) = try setup()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        manager.localOnly = true; camera.delayMS = 100
+        for _ in 0..<64 { manager.begin(access: { access }) }
+        try await wait { manager.frame != nil }
+        XCTAssertEqual(camera.frames,1)
+        manager.cancel(); try await wait { !manager.busy }
+    }
+    func testProcessingRetainsExactFramePoseTimeAndResetsWithoutCarryingCrops() async throws {
+        let processor = ObservationProcessor(), time = Date()
+        let pose = JSONValue.object(["pose_id": .string("pose:exact"),"measured_at": .string(V1Time.format(time))])
+        var first = ObservationFrame(image: patternedImage(),capturedAt: time,diagnostic: nil,coordinateWorld: "world:one")
+        first.pose = pose; first.cameraID = "camera:test"
+        let original = try await processor.process(first,mode: .manual,manual: [box])
+        let crop = try XCTUnwrap(original.crops.first)
+        XCTAssertEqual(crop.pose,pose); XCTAssertEqual(crop.capturedAt,time); XCTAssertEqual(crop.cameraID,"camera:test")
+        await processor.reset(settings: ObservationSettings())
+        let next = ObservationFrame(image: patternedImage(),capturedAt: time.addingTimeInterval(2),diagnostic: nil,coordinateWorld: "world:two")
+        let current = try await processor.process(next,mode: .manual,manual: [box])
+        XCTAssertTrue(current.crops.allSatisfy { $0.pose == nil && $0.capturedAt == next.capturedAt && $0.id != crop.id })
+    }
+
+    @MainActor func testLimitedAndLostTrackingAllowCropsWithoutRequestingPose() async throws {
+        let (manager,camera,transport,store,access) = try setup()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        camera.world = "world:test"; camera.trackingState = .limited; manager.settings.sampleInterval = 1
+        try await captured(manager,access)
+        XCTAssertTrue(manager.crops.allSatisfy { $0.pose == nil })
+        camera.trackingState = .lost; let previous = camera.frames
+        try await wait { camera.frames > previous }
+        let skipped = await transport.poseRequestCount(); XCTAssertEqual(skipped,0)
+        camera.trackingState = .unanchored
+        for _ in 0..<100 { if await transport.poseRequestCount() > 0 { break }; try await Task.sleep(for: .milliseconds(20)) }
+        let normal = await transport.poseRequestCount(); XCTAssertGreaterThan(normal,0)
+        XCTAssertGreaterThan(manager.metrics.missingPoseSamples,0)
+        manager.finish(); try await wait { manager.phase == .completed && !manager.busy }
+    }
+    @MainActor func testForegroundRecoveryUploadsSavedEvidenceWithoutResumingCapture() async throws {
+        let (manager,camera,_,store,access) = try setup()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        try await captured(manager,access)
+        let ids = manager.crops.map(\.id)
+        manager.interrupt(); try await wait { !manager.busy }
+        let frames = camera.frames
+        let recovered = ObservationSessionManager(camera: camera,store: store,thermalState: { 0 })
+        try await wait { recovered.phase == .failed }
+        recovered.begin(access: { access }); XCTAssertEqual(camera.frames,frames)
+        recovered.retry(access: { access }); try await wait { recovered.phase == .completed && !recovered.busy }
+        XCTAssertEqual(camera.frames,frames); XCTAssertEqual(recovered.crops.map(\.id),ids)
+    }
+
+    @MainActor func testSlowNativeImageProcessingYieldsUIAndHonorsCancellationBeforePublishing() async throws {
+        let pixels = SlowObservationPixels(), processor = ObservationProcessor(), manual = box
+        let frame = ObservationFrame(image: pixels.image(),capturedAt: Date(),diagnostic: nil)
+        let work = Task { try await processor.process(frame,mode: .manual,manual: [manual]) }
+        defer { pixels.resume.signal(); work.cancel() }
+        let entered = await Task.detached { pixels.didEnter() }.value
+        XCTAssertTrue(entered,"Native processing never reached the controlled image read")
+        // Reaching this main-actor assertion while the native read is blocked proves UI isolation.
+        work.cancel(); pixels.resume.signal()
+        do { _ = try await work.value; XCTFail("Cancelled native processing published a result") } catch is CancellationError { }
+        await processor.reset(settings: ObservationSettings())
+        let clean = try await processor.process(frame,mode: .manual,manual: [])
+        XCTAssertTrue(clean.crops.isEmpty); XCTAssertEqual(clean.totalTracks,0)
+    }
+
 }
 
 /// Opt-in hardware experiment. A simulator cannot establish any of these measurements.

@@ -46,14 +46,17 @@ struct ObservationFrame: @unchecked Sendable {
     let diagnostic: JSONValue?
     var pose: JSONValue? = nil
     var cameraID = "camera:rear-primary"
-    var world: String? { guard case .object(let d) = diagnostic, case .string(let s) = d["world_id"] else { return nil }; return s }
+    var coordinateWorld: String? = nil
+    var world: String? { if let coordinateWorld { return coordinateWorld }; guard case .object(let d) = diagnostic, case .string(let s) = d["world_id"] else { return nil }; return s }
 }
 @MainActor protocol ObservationAcquiring: AnyObject {
+    var observationWorld: String? { get }
     func beginObservationAcquisition() async throws
     func endObservationAcquisition()
     func observationFrame(body: String) async throws -> ObservationFrame
 }
 extension ObservationAcquiring {
+    var observationWorld: String? { nil }
     func beginObservationAcquisition() async throws { }
     func endObservationAcquisition() { }
 }
@@ -75,7 +78,7 @@ struct ObservationTrack: Sendable, Identifiable {
 struct ObservationCrop: Codable, Sendable, Identifiable {
     let id: String
     let trackID: String
-    let jpeg: Data
+    var jpeg: Data
     let width: Int
     let height: Int
     let sourceWidth: Int
@@ -89,8 +92,11 @@ struct ObservationCrop: Codable, Sendable, Identifiable {
     let objectness: Double?
     var pose: JSONValue? = nil
     var cameraID = "camera:rear-primary"
-    var ref: String { "sha256:" + SHA256.hash(data: jpeg).map { String(format: "%02x", $0) }.joined() }
-    var reference: JSONValue { .object(["ref": .string(ref), "kind": .string("crop"), "media_type": .string("image/jpeg"), "byte_length": .integer(Int64(jpeg.count)), "width": .integer(Int64(width)), "height": .integer(Int64(height))]) }
+    var mediaRef: String? = nil
+    var mediaBytes: Int? = nil
+    var ref: String { mediaRef ?? "sha256:" + SHA256.hash(data: jpeg).map { String(format: "%02x", $0) }.joined() }
+    mutating func releaseMedia() { mediaRef = ref; mediaBytes = mediaBytes ?? jpeg.count; jpeg = Data() }
+    var reference: JSONValue { .object(["ref": .string(ref), "kind": .string("crop"), "media_type": .string("image/jpeg"), "byte_length": .integer(Int64(mediaBytes ?? jpeg.count)), "width": .integer(Int64(width)), "height": .integer(Int64(height))]) }
     func wire(session: String, mode: ObservationMode) -> JSONValue {
         var fields: [String: JSONValue] = ["observation_id": .string(id), "session_id": .string(session), "track_id": .string(trackID),
             "captured_at": .string(V1Time.format(capturedAt)), "crop": reference,

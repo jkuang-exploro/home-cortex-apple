@@ -33,7 +33,6 @@ struct InspectionImage: Sendable {
     private var arPreviewFPS = 3
     private var arPreviewDelivery: (@Sendable (InspectionImage) -> Void)?
     private var photographing = false
-    private var unavailableUntil: Date?
     static func permissionFailure(_ status: AVAuthorizationStatus) -> VisionFailure? {
         switch status {
         case .authorized: nil
@@ -44,7 +43,6 @@ struct InspectionImage: Sendable {
     }
     var availability: VisionFailure? {
         if let error = Self.permissionFailure(AVCaptureDevice.authorizationStatus(for: .video)) { return error }
-        if let unavailableUntil, unavailableUntil > Date() { return .unavailable }
         return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) == nil ? .unavailable : nil
     }
     var permissionLabel: String {
@@ -66,46 +64,23 @@ struct InspectionImage: Sendable {
         guard !photographing else { throw VisionFailure.busy }
         photographing = true
         defer { photographing = false }
-        do {
-            if trackingDesired {
-                do { return try await tracking.freshImage(deadline: deadline) }
-                catch {
-                    try Task.checkCancellation()
-                    guard Date() < deadline else { throw VisionFailure.timeout }
-                    // A real new exposure has priority. Any camera handoff starts a new tracking world.
-                    tracking.stop()
-                    do {
-                        let image = try await engine.photo(deadline: deadline)
-                        await engine.releaseCamera()
-                        if trackingDesired { tracking.start(resetReason: "Fresh evidence required camera handoff; new unanchored world") }
-                        return image
-                    } catch {
-                        await engine.releaseCamera()
-                        if trackingDesired { tracking.start(resetReason: "Evidence camera handoff failed; new unanchored world") }
-                        throw error
-                    }
-                }
-            }
-            return try await withTaskCancellationHandler {
-                try await engine.photo(deadline: deadline)
-            } onCancel: { self.engine.cancelPhoto() }
-        } catch {
-            if error as? VisionFailure == .unavailable { unavailableUntil = Date().addingTimeInterval(2) }
-            throw error
-        }
+        if trackingDesired { return try await tracking.freshImage(deadline: deadline) }
+        let image = try await engine.photo(deadline: deadline)
+        try Task.checkCancellation(); return image
     }
     func beginObservationAcquisition() async throws {
         if let availability { throw availability }
         if !trackingDesired { try await engine.beginObservationAcquisition() }
     }
     func endObservationAcquisition() { engine.endObservationAcquisition() }
+    var observationWorld: String? { trackingDesired ? tracking.worldID : nil }
     func observationFrame(body: String) async throws -> ObservationFrame {
         if let availability { throw availability }
         if trackingDesired { return try await tracking.observationFrame(body: body) }
         // One-shot sample of the existing video output; inspection sinks are never replaced.
         return try await engine.sample()
     }
-    func cancel() { engine.cancelPhoto(); tracking.cancelCapture() }
+    func cancel() { tracking.cancelCapture() }
     func useTracking(_ enabled: Bool) async {
         ownershipGeneration += 1
         let token = ownershipGeneration
@@ -140,21 +115,17 @@ struct InspectionImage: Sendable {
 }
 
 /// Mutable AVFoundation state and encoding run on one bounded, serial camera queue.
-private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+private final class CameraEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let queue = DispatchQueue(label: "HomeCortex.Camera", qos: .userInitiated)
     private let session = AVCaptureSession()
-    private let photoOutput = AVCapturePhotoOutput()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var sampleContinuation: CheckedContinuation<ObservationFrame, any Error>?
     private var sampleID = UUID()
     private var observationDemand = false
     private var configured = false
-    private var photoContinuation: CheckedContinuation<CapturedImage, any Error>?
-    private var photoID: Int64?
-    private var deadline = Date.distantPast
-    private var captureTime: Date?
-    private var started = Date()
+    private var notBefore = Date.distantPast
+    private var sampleSide = 960.0
     private var previewSink: (@Sendable (InspectionImage) -> Void)?
     private var previewInterval = 1.0 / 3
     private var lastPreview = Date.distantPast
@@ -164,16 +135,14 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
             let input = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
             session.sessionPreset = .hd1280x720
-            guard session.canAddInput(input), session.canAddOutput(photoOutput), session.canAddOutput(videoOutput) else {
+            guard session.canAddInput(input), session.canAddOutput(videoOutput) else {
                 session.commitConfiguration(); throw VisionFailure.unavailable
             }
-            session.addInput(input); session.addOutput(photoOutput); session.addOutput(videoOutput)
+            session.addInput(input); session.addOutput(videoOutput)
             videoOutput.alwaysDiscardsLateVideoFrames = true
             videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
             videoOutput.setSampleBufferDelegate(self, queue: queue)
-            for output in [photoOutput as AVCaptureOutput, videoOutput] {
-                if let connection = output.connection(with: .video), connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
-            }
+            if let connection = videoOutput.connection(with: .video), connection.isVideoRotationAngleSupported(90) { connection.videoRotationAngle = 90 }
             session.commitConfiguration()
             // Limit sensor delivery when supported; sample/JPEG publication has its own stricter cap.
             if device.activeFormat.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= 5 && $0.maxFrameRate >= 5 }) {
@@ -196,15 +165,16 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         }
     }
     func endObservationAcquisition() { queue.async { self.observationDemand = false; self.stopIfIdle() } }
-    func sample() async throws -> ObservationFrame {
+    func sample(deadline: Date = Date().addingTimeInterval(2), notBefore: Date = .distantPast, maxSide: Double = 960) async throws -> ObservationFrame {
+        try Task.checkCancellation()
         let id = UUID()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     guard self.sampleContinuation == nil else { continuation.resume(throwing: VisionFailure.busy); return }
-                    self.sampleID = id; self.sampleContinuation = continuation
+                    self.sampleID = id; self.sampleContinuation = continuation; self.notBefore = notBefore; self.sampleSide = maxSide
                     do { try self.configure() } catch { self.finishSample(.failure(error)) }
-                    self.queue.asyncAfter(deadline: .now()+2) {
+                    self.queue.asyncAfter(deadline: .now()+max(0,deadline.timeIntervalSinceNow)) {
                         if self.sampleID == id { self.finishSample(.failure(VisionFailure.timeout)) }
                     }
                 }
@@ -231,80 +201,37 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         queue.async { self.previewSink = nil; self.stopIfIdle() }
     }
     func photo(deadline: Date) async throws -> CapturedImage {
-        try await withCheckedThrowingContinuation { continuation in
+        let requested = Date()
+        let frame = try await sample(deadline: min(deadline,requested.addingTimeInterval(10)),notBefore: requested,maxSide: 1280)
+        try Task.checkCancellation()
+        return try await withCheckedThrowingContinuation { continuation in
             queue.async {
-                guard self.photoContinuation == nil else { continuation.resume(throwing: VisionFailure.busy); return }
-                self.photoContinuation = continuation
-                self.deadline = min(deadline, Date().addingTimeInterval(10))
-                self.captureTime = nil
                 do {
-                    guard Date() < self.deadline else { throw VisionFailure.timeout }
-                    try self.configure()
-                    let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
-                    settings.photoQualityPrioritization = .speed
-                    self.photoID = settings.uniqueID
-                    self.started = Date()
-                    self.photoOutput.capturePhoto(with: settings, delegate: self)
-                    let id = settings.uniqueID
-                    self.queue.asyncAfter(deadline: .now() + max(0, self.deadline.timeIntervalSinceNow)) {
-                        if self.photoID == id { self.finishPhoto(.failure(VisionFailure.timeout)) }
-                    }
-                } catch { self.finishPhoto(.failure(error as? VisionFailure ?? .unavailable)) }
+                    let encodingStart = Date()
+                    let jpeg = try Self.jpeg(frame.image,quality: 0.75,limit: VisualEvidence.maxMediaBytes)
+                    guard Date() < deadline else { throw VisionFailure.timeout }
+                    continuation.resume(returning: CapturedImage(jpeg: jpeg,capturedAt: frame.capturedAt,cameraID: frame.cameraID,
+                        width: frame.image.width,height: frame.image.height,captureDuration: encodingStart.timeIntervalSince(requested),encodingDuration: Date().timeIntervalSince(encodingStart)))
+                } catch { continuation.resume(throwing: error) }
             }
         }
     }
-    func cancelPhoto() { queue.async { self.finishPhoto(.failure(CancellationError())) } }
     func releaseCamera() async {
         await withCheckedContinuation { continuation in
             queue.async {
                 self.previewSink = nil
-                self.finishPhoto(.failure(CancellationError()))
+                self.finishSample(.failure(VisionFailure.staleSession))
                 if self.session.isRunning { self.session.stopRunning() }
                 continuation.resume()
             }
         }
     }
-    func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor settings: AVCaptureResolvedPhotoSettings) {
-        let time = Date(); let id = settings.uniqueID
-        queue.async { if self.photoID == id { self.captureTime = time } }
-    }
-    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: (any Error)?) {
-        let raw = photo.fileDataRepresentation(); let failed = error != nil; let id = photo.resolvedSettings.uniqueID
-        queue.async {
-            guard self.photoID == id else { return }
-            do {
-                guard !failed, let raw, let time = self.captureTime else { throw VisionFailure.unavailable }
-                guard Date() < self.deadline else { throw VisionFailure.timeout }
-                let captureDuration = Date().timeIntervalSince(self.started)
-                let encodingStart = Date()
-                guard let source = CGImageSourceCreateWithData(raw as CFData, nil),
-                      let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                        kCGImageSourceCreateThumbnailFromImageAlways: true,
-                        kCGImageSourceCreateThumbnailWithTransform: true,
-                        kCGImageSourceThumbnailMaxPixelSize: 1280
-                      ] as CFDictionary) else { throw VisionFailure.internalError }
-                let jpeg = try Self.jpeg(image, quality: 0.75, limit: VisualEvidence.maxMediaBytes)
-                self.finishPhoto(.success(CapturedImage(jpeg: jpeg, capturedAt: time, cameraID: "camera:rear-primary",
-                    width: image.width, height: image.height, captureDuration: captureDuration,
-                    encodingDuration: Date().timeIntervalSince(encodingStart))))
-            } catch { self.finishPhoto(.failure(error as? VisionFailure ?? .internalError)) }
-        }
-    }
-    func photoOutput(_ output: AVCapturePhotoOutput, didFinishCaptureFor settings: AVCaptureResolvedPhotoSettings, error: (any Error)?) {
-        if error != nil { let id = settings.uniqueID; queue.async { if self.photoID == id { self.finishPhoto(.failure(VisionFailure.unavailable)) } } }
-    }
-    private func finishPhoto(_ result: Result<CapturedImage, any Error>) {
-        let continuation = photoContinuation
-        photoContinuation = nil; photoID = nil
-        stopIfIdle()
-        continuation?.resume(with: result)
-    }
     private func stopIfIdle() {
-        if !observationDemand && previewSink == nil && sampleContinuation == nil && photoContinuation == nil && session.isRunning { session.stopRunning() }
+        if !observationDemand && previewSink == nil && sampleContinuation == nil && session.isRunning { session.stopRunning() }
     }
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        // Photo commands take priority. Late buffers are discarded by AVFoundation.
-        guard photoContinuation == nil, sampleContinuation != nil || (previewSink != nil && Date().timeIntervalSince(lastPreview) >= previewInterval),
+        // One pending sample; late buffers are discarded by AVFoundation.
+        guard sampleContinuation != nil || (previewSink != nil && Date().timeIntervalSince(lastPreview) >= previewInterval),
               let buffer = CMSampleBufferGetImageBuffer(sampleBuffer), let clock = session.synchronizationClock else { return }
         let offset = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer)) - CMTimeGetSeconds(CMClockGetTime(clock))
         guard offset.isFinite, abs(offset) <= 2 else { return }
@@ -312,8 +239,8 @@ private final class CameraEngine: NSObject, AVCapturePhotoCaptureDelegate, AVCap
         lastPreview = Date()
         autoreleasepool {
             let source = CIImage(cvPixelBuffer: buffer)
-            if sampleContinuation != nil {
-                let factor = min(1,960 / max(source.extent.width,source.extent.height))
+            if sampleContinuation != nil, captured >= notBefore {
+                let factor = min(1,sampleSide / max(source.extent.width,source.extent.height))
                 let sampled = source.transformed(by: CGAffineTransform(scaleX: factor,y: factor))
                 if let cg = context.createCGImage(sampled,from: sampled.extent.integral) {
                     finishSample(.success(ObservationFrame(image: cg,capturedAt: captured,diagnostic: nil)))

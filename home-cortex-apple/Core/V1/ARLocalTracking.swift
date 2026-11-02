@@ -22,7 +22,8 @@ import UniformTypeIdentifiers
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var capturing = false
     @ObservationIgnored private var previewing = false
-    @ObservationIgnored private var captureContinuation: CheckedContinuation<ARFrame, any Error>?
+    @ObservationIgnored private var sampling = false
+    @ObservationIgnored private var copying = false
     @ObservationIgnored private var captureID = UUID()
     @ObservationIgnored private let encoder = ARImageEncoder()
     var supported: Bool { ARWorldTrackingConfiguration.isSupported }
@@ -37,7 +38,6 @@ import UniformTypeIdentifiers
         guard supported else { reason = "ARKit world tracking unavailable"; return }
         let config = ARWorldTrackingConfiguration()
         config.worldAlignment = .gravity
-        if let format = ARWorldTrackingConfiguration.recommendedVideoFormatForHighResolutionFrameCapturing { config.videoFormat = format }
         session.delegate = self
         worldID = "tracking:" + UUID().uuidString.lowercased()
         wallOrigin = Date(); uptimeOrigin = ProcessInfo.processInfo.systemUptime
@@ -47,34 +47,10 @@ import UniformTypeIdentifiers
     func stop() {
         cancelCapture()
         generation += 1; session.pause(); running = false; cameraPose = nil; measuredAt = nil
+        Task { await encoder.clear() }
         worldID = nil; sequence = 0; lastTimestamp = -.infinity; state = .unavailable; reason = "Localization is off"
     }
-    func cancelCapture() {
-        captureID = UUID(); let pending = captureContinuation; captureContinuation = nil
-        pending?.resume(throwing: CancellationError())
-    }
-    private func highResolutionFrame(deadline: Date) async throws -> ARFrame {
-        let id = UUID(); captureID = id
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                captureContinuation = continuation
-                session.captureHighResolutionFrame { frame, error in
-                    Task { @MainActor in
-                        guard self.captureID == id, let pending = self.captureContinuation else { return }
-                        self.captureContinuation = nil
-                        if let frame { pending.resume(returning: frame) }
-                        else { pending.resume(throwing: error ?? VisionFailure.unavailable) }
-                    }
-                }
-                Task { @MainActor in
-                    try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
-                    guard self.captureID == id, let pending = self.captureContinuation else { return }
-                    self.captureContinuation = nil; self.captureID = UUID()
-                    pending.resume(throwing: VisionFailure.timeout)
-                }
-            }
-        } onCancel: { Task { @MainActor in if self.captureID == id { self.cancelCapture() } } }
-    }
+    func cancelCapture() { captureID = UUID() }
     func measurementTime(_ timestamp: Double) -> Date? {
         let now = ProcessInfo.processInfo.systemUptime
         guard timestamp.isFinite, timestamp <= now + 0.01, now - timestamp < 0.5 else { return nil }
@@ -83,15 +59,17 @@ import UniformTypeIdentifiers
         return date
     }
     @discardableResult func poll() -> Bool {
-        guard running, let frame = session.currentFrame else { return false }
+        guard running else { return false }
+        guard let frame = session.currentFrame else { cameraPose = nil; measuredAt = nil; state = .lost; return false }
         guard frame.timestamp > lastTimestamp, let time = measurementTime(frame.timestamp),
               let pose = try? RigidTransform(matrix: frame.camera.transform) else {
             if measuredAt.map({ Date().timeIntervalSince($0) > 0.5 }) ?? false { cameraPose = nil; measuredAt = nil; state = .lost; reason = "Tracking sample unavailable or clock discontinuity" }
             return false
         }
-        lastTimestamp = frame.timestamp; measuredAt = time; sequence += 1; cameraPose = pose
+        lastTimestamp = frame.timestamp; sequence += 1
+        cameraPose = nil; measuredAt = nil
         switch frame.camera.trackingState {
-        case .normal: state = .unanchored; reason = "Local camera pose only; household calibration unavailable"
+        case .normal: cameraPose = pose; measuredAt = time; state = .unanchored; reason = "Local camera pose only; household calibration unavailable"
         case .notAvailable: state = .lost; reason = "ARKit tracking unavailable"
         case .limited(let cause):
             state = .limited
@@ -105,32 +83,24 @@ import UniformTypeIdentifiers
         }
         return true
     }
-    func visualFrame() throws -> VisualFrame {
-        let interval = PerformanceInterval("FrameCopy")
-        defer { interval.end() }
+    func visualFrame() async throws -> VisualFrame {
+        guard !copying else { throw VisionFailure.busy }
+        copying = true; defer { copying = false }
         guard running, state == .unanchored, let worldID, let frame = session.currentFrame,
               case .normal = frame.camera.trackingState, let time = measurementTime(frame.timestamp) else {
             throw CalibrationError.tracking
         }
-        let pixels = frame.capturedImage
-        guard CVPixelBufferGetPlaneCount(pixels) >= 1 else { throw CalibrationError.tracking }
-        CVPixelBufferLockBaseAddress(pixels, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
-        let width = CVPixelBufferGetWidthOfPlane(pixels, 0), height = CVPixelBufferGetHeightOfPlane(pixels, 0)
-        let stride = CVPixelBufferGetBytesPerRowOfPlane(pixels, 0)
-        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixels, 0), width > 0, height > 0,
-              width <= 8192, height <= 8192, stride >= width else { throw CalibrationError.tracking }
-        let k = frame.camera.intrinsics
-        return VisualFrame(pixels: Data(bytes: base, count: stride*height), width: width, height: height, stride: stride,
-            intrinsics: VisualIntrinsics(fx: Double(k.columns.0.x), fy: Double(k.columns.1.y),
-                cx: Double(k.columns.2.x), cy: Double(k.columns.2.y)),
-            worldFromARCamera: try RigidTransform(matrix: frame.camera.transform), worldID: worldID, measuredAt: time)
+        let token = generation
+        let result = try await encoder.visual(ARPixels(buffer: frame.capturedImage), camera: frame.camera, world: worldID, time: time)
+        try Task.checkCancellation()
+        guard token == generation else { throw CalibrationError.tracking }
+        return result
     }
     nonisolated func sessionWasInterrupted(_ session: ARSession) {
-        Task { @MainActor in self.cameraPose = nil; self.measuredAt = nil; self.state = .relocalizationRequired; self.reason = "Camera/session interrupted; recalibration required" }
+        Task { @MainActor in self.stop(); self.state = .relocalizationRequired; self.reason = "Camera/session interrupted; recalibration required" }
     }
     nonisolated func sessionInterruptionEnded(_ session: ARSession) {
-        Task { @MainActor in if self.running { self.start(resetReason: "Camera interruption ended; new unanchored world") } }
+        Task { @MainActor in if self.state == .relocalizationRequired { self.start(resetReason: "Camera interruption ended; new unanchored world") } }
     }
     nonisolated func session(_ session: ARSession, didFailWithError error: any Error) {
         Task { @MainActor in self.stop(); self.reason = "ARKit session failed" }
@@ -139,7 +109,7 @@ import UniformTypeIdentifiers
         try arPose.composed(with: .opticalFromARCamera)
     }
     func diagnostic(body: String) -> JSONValue? {
-        guard let worldID, let measuredAt, let cameraPose, let optical = try? Self.opticalPose(cameraPose), Date().timeIntervalSince(measuredAt) < 0.3 else { return nil }
+        guard state == .unanchored, let worldID, let measuredAt, let cameraPose, let optical = try? Self.opticalPose(cameraPose), Date().timeIntervalSince(measuredAt) < 0.3 else { return nil }
         return .object(["embodiment_id": .string(body), "world_id": .string(worldID), "source": .string("ARKit"),
                         "reference_frame": .string("session_local_y_up"), "pose_frame": .string("camera_optical"),
                         "household_aligned": .bool(false), "uncertainty": .string("unknown"),
@@ -154,49 +124,54 @@ import UniformTypeIdentifiers
         guard running else { throw VisionFailure.unavailable }
         guard !capturing else { throw VisionFailure.busy }
         capturing = true; defer { capturing = false }
-        let token = generation, requested = Date()
-        // Callback is deadline-bounded by the caller task; stale/out-of-order completions cannot be evidence.
-        let frame = try await highResolutionFrame(deadline: min(deadline, Date().addingTimeInterval(5)))
+        let token = generation, requested = Date(), id = UUID()
+        let limit = min(deadline, requested.addingTimeInterval(5))
+        captureID = id
+        // Wait for a new exposure from the existing AR session; snapshots never reset its world.
+        while running, token == generation, captureID == id, Date() < limit,
+              session.currentFrame.flatMap({ measurementTime($0.timestamp) }).map({ $0 >= requested }) != true {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard captureID == id else { throw CancellationError() }
+        guard let frame = session.currentFrame else { throw VisionFailure.unavailable }
         try Task.checkCancellation()
         guard running, token == generation else { throw VisionFailure.staleSession }
-        guard let time = measurementTime(frame.timestamp), time >= requested, Date() < deadline else { throw VisionFailure.timeout }
+        guard let time = measurementTime(frame.timestamp), time >= requested, Date() < limit else { throw VisionFailure.timeout }
         let encodingStart = Date()
-        let image = try await encoder.encode(ARPixels(frame.capturedImage), capturedAt: time, maxSide: 1280, limit: VisualEvidence.maxMediaBytes)
-        guard token == generation, Date() < deadline else { throw VisionFailure.timeout }
+        let image = try await encoder.encode(ARPixels(buffer: frame.capturedImage), capturedAt: time, maxSide: 1280, limit: VisualEvidence.maxMediaBytes)
+        try Task.checkCancellation()
+        guard token == generation, captureID == id, Date() < deadline else { throw VisionFailure.timeout }
         return CapturedImage(jpeg: image.jpeg, capturedAt: time, cameraID: "camera:rear-primary", width: image.width, height: image.height,
                              captureDuration: encodingStart.timeIntervalSince(requested), encodingDuration: Date().timeIntervalSince(encodingStart))
     }
     func observationFrame(body: String) async throws -> ObservationFrame {
+        guard !sampling else { throw VisionFailure.busy }
+        sampling = true; defer { sampling = false }
         guard !capturing, running, let frame = session.currentFrame,
               let time = measurementTime(frame.timestamp) else { throw VisionFailure.unavailable }
-        let token = generation
+        let token = generation, world = worldID
         // The diagnostic and upright image describe exactly this ARFrame, not the latest poll.
         var diagnostic: JSONValue?
-        if let worldID, let pose = try? Self.opticalPose(RigidTransform(matrix: frame.camera.transform)) {
-            let trackingState: LocalizationState
-            switch frame.camera.trackingState {
-            case .normal: trackingState = .unanchored
-            case .limited: trackingState = .limited
-            case .notAvailable: trackingState = .lost
-            }
+        if case .normal = frame.camera.trackingState, let worldID,
+           let pose = try? Self.opticalPose(RigidTransform(matrix: frame.camera.transform)) {
             diagnostic = .object(["embodiment_id": .string(body), "world_id": .string(worldID), "source": .string("ARKit"),
                 "reference_frame": .string("session_local_y_up"), "pose_frame": .string("camera_optical"),
                 "household_aligned": .bool(false), "uncertainty": .string("unknown"),
-                "tracking_state": .string(trackingState.rawValue), "tracking_reason": .string(String(describing: frame.camera.trackingState)),
+                "tracking_state": .string(LocalizationState.unanchored.rawValue), "tracking_reason": .string(String(describing: frame.camera.trackingState)),
                 "reset_reason": .string(resetReason), "publication_blocker": .string(publicationBlocker),
                 "measured_at": .string(V1Time.format(time)), "sequence": .integer(max(1,sequence)), "camera_pose": pose.diagnostic])
         }
-        let image = try await encoder.observation(ARPixels(frame.capturedImage),capturedAt: time)
+        let image = try await encoder.render(ARPixels(buffer: frame.capturedImage),capturedAt: time,maxSide: 960)
         try Task.checkCancellation()
         guard token == generation else { throw VisionFailure.staleSession }
-        return ObservationFrame(image: image,capturedAt: time,diagnostic: diagnostic)
+        return ObservationFrame(image: image,capturedAt: time,diagnostic: diagnostic,coordinateWorld: world)
     }
     func previewImage() async throws -> InspectionImage {
         guard !capturing, !previewing else { throw VisionFailure.busy }
         guard running, let frame = session.currentFrame, let time = measurementTime(frame.timestamp) else { throw VisionFailure.unavailable }
         previewing = true; defer { previewing = false }
         let token = generation
-        let image = try await encoder.encode(ARPixels(frame.capturedImage), capturedAt: time, maxSide: 640, limit: 98_304)
+        let image = try await encoder.encode(ARPixels(buffer: frame.capturedImage), capturedAt: time, maxSide: 640, limit: 98_304)
         try Task.checkCancellation()
         guard token == generation else { throw VisionFailure.staleSession }
         return image
@@ -206,7 +181,7 @@ import UniformTypeIdentifiers
         guard running, let frame = session.currentFrame, let time = measurementTime(frame.timestamp) else { throw VisionFailure.unavailable }
         previewing = true; defer { previewing = false }
         let token = generation
-        let image = try await encoder.display(ARPixels(frame.capturedImage), capturedAt: time)
+        let image = try await encoder.render(ARPixels(buffer: frame.capturedImage), capturedAt: time,maxSide: 640)
         try Task.checkCancellation()
         guard token == generation else { throw VisionFailure.staleSession }
         return DisplayPreview(image: image, capturedAt: time)
@@ -222,21 +197,35 @@ struct DisplayPreview: @unchecked Sendable {
 private struct ARPixels: @unchecked Sendable {
     // Retain exactly one pixel buffer across the serial encoder actor call.
     let buffer: CVPixelBuffer
-    init(_ buffer: CVPixelBuffer) { self.buffer = buffer }
 }
 private actor ARImageEncoder {
     private let context = CIContext(options: [.cacheIntermediates: false])
     private var previewTime: Date?
     private var previewImage: CGImage?
     private var previewJPEG: InspectionImage?
+    func clear() { previewTime = nil; previewImage = nil; previewJPEG = nil }
 
-    func observation(_ pixels: ARPixels, capturedAt: Date) throws -> CGImage {
-        try render(pixels,capturedAt: capturedAt,maxSide: 960)
+    func visual(_ sample: ARPixels, camera: ARCamera, world: String, time: Date) throws -> VisualFrame {
+        try Task.checkCancellation()
+        let pixels = sample.buffer
+        let interval = PerformanceInterval("FrameCopy")
+        defer { interval.end() }
+        guard CVPixelBufferGetPlaneCount(pixels) >= 1 else { throw CalibrationError.tracking }
+        CVPixelBufferLockBaseAddress(pixels, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
+        let width = CVPixelBufferGetWidthOfPlane(pixels, 0), height = CVPixelBufferGetHeightOfPlane(pixels, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(pixels, 0)
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pixels, 0), width > 0, height > 0,
+              width <= 8192, height <= 8192, stride >= width else { throw CalibrationError.tracking }
+        let k = camera.intrinsics
+        return VisualFrame(pixels: Data(bytes: base, count: stride*height), width: width, height: height, stride: stride,
+            intrinsics: VisualIntrinsics(fx: Double(k.columns.0.x), fy: Double(k.columns.1.y),
+                cx: Double(k.columns.2.x), cy: Double(k.columns.2.y)),
+            worldFromARCamera: try RigidTransform(matrix: camera.transform), worldID: world, measuredAt: time)
     }
-    func display(_ pixels: ARPixels, capturedAt: Date) throws -> CGImage {
-        try render(pixels, capturedAt: capturedAt, maxSide: 640)
-    }
-    private func render(_ pixels: ARPixels, capturedAt: Date, maxSide: Double) throws -> CGImage {
+
+    func render(_ pixels: ARPixels, capturedAt: Date, maxSide: Double) throws -> CGImage {
+        try Task.checkCancellation()
         if maxSide == 640, previewTime == capturedAt, let previewImage { return previewImage }
         let source = CIImage(cvPixelBuffer: pixels.buffer).oriented(.right)
         let factor = min(1, maxSide / max(source.extent.width, source.extent.height))

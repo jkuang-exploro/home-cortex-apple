@@ -12,8 +12,7 @@ import OSLog
     private(set) var lastTiming: String?
     private(set) var lastError: String?
     @ObservationIgnored private var worker: Task<Void, Never>?
-    @ObservationIgnored private var receipts: VisionReceipts?
-    @ObservationIgnored private var receiptIdentity: String?
+    @ObservationIgnored private var receipts: (identity: String, store: VisionReceipts)?
     @ObservationIgnored private var pending: [String: JSONValue] = [:]
     @ObservationIgnored private var waiters: [String: [CheckedContinuation<JSONValue, Never>]] = [:]
     @ObservationIgnored private let logger = Logger(subsystem: "HomeCortex", category: "Vision")
@@ -32,11 +31,13 @@ import OSLog
     func start(connection: ConnectionController) {
         guard configured, worker == nil else { return }
         worker = Task { [weak self, weak connection] in
+            var nextReap = Date.distantPast
             var transportSession: String?
             var cachedTransport: (any V1Transport)?
             while !Task.isCancelled {
                 guard let self, let connection else { return }
                 do {
+                    if Date() >= nextReap { try await receipts?.store.reap(); nextReap = Date().addingTimeInterval(60) }
                     if connection.displayedState == .connected, let credential = connection.credential,
                        let body = credential.embodimentID, let session = connection.session?.sessionID {
                         mediaLimit = min(VisualEvidence.maxMediaBytes, connection.maxMediaBytes)
@@ -52,8 +53,10 @@ import OSLog
                                 connection.displayedState == .connected && connection.session?.sessionID == session
                             }
                             guard connection.displayedState == .connected, connection.session?.sessionID == session else { break }
+                            guard try await receipts?.store.isAcknowledged(reply) != true else { continue }
                             let upload = Date()
                             guard try await transport.send(path: "/client-interface/v1/messages", body: reply) == .null else { throw ClientFailure.invalidResponse }
+                            try await receipts?.store.acknowledge(reply)
                             let ms = Int(Date().timeIntervalSince(upload) * 1000)
                             logger.info("vision.observe response acknowledged, upload ms: \(ms, privacy: .public)")
                             lastTiming = (lastTiming ?? "") + "; upload \(ms) ms; vision.observe \(Int(Date().timeIntervalSince(requestReceived) * 1000)) ms"
@@ -77,34 +80,33 @@ import OSLog
         let pendingKey = binding + "\n" + command.id
         if let original = pending[pendingKey] {
             guard original == raw else { return command.reply(error: .conflict) }
+            guard (waiters[pendingKey]?.count ?? 0) < 8 else { return command.reply(error: .busy) }
             return await withCheckedContinuation { waiters[pendingKey, default: []].append($0) }
         }
-        if receiptIdentity != binding {
-            receipts = try VisionReceipts(identity: binding, root: root)
-            receiptIdentity = binding
+        guard pending.isEmpty else { return command.reply(error: .busy) }
+        if receipts?.identity != binding {
+            receipts = (binding, try VisionReceipts(identity: binding, root: root))
         }
-        guard let receipts else { throw VisionFailure.internalError }
-        let first: Bool
-        do {
-            let outcome = try receipts.begin(command)
-            first = outcome.0
-            if let previous = outcome.1 { return previous }
-        } catch let failure as VisionFailure { return command.reply(error: failure) }
+        guard let receipts = receipts?.store else { throw VisionFailure.internalError }
         var reply = command.reply(error: .internalError)
         pending[pendingKey] = raw
         defer {
             pending.removeValue(forKey: pendingKey)
             for waiter in waiters.removeValue(forKey: pendingKey) ?? [] { waiter.resume(returning: reply) }
         }
+        let outcome: (Bool, JSONValue?)
+        do { outcome = try await receipts.begin(command) }
+        catch let failure as VisionFailure { reply = command.reply(error: failure); return reply }
+        if let previous = outcome.1 { reply = previous; return reply }
         do {
-            guard first else { throw VisionFailure.internalError }
+            guard outcome.0 else { throw VisionFailure.internalError }
             guard configured else { throw VisionFailure.permissionDenied }
-            do { let raw = try command.value.object(required: ["protocol_version", "schema_name", "schema_version", "message_id", "sent_at", "request_id", "target", "operation", "arguments", "deadline_at"], optional: ["extensions"]); _ = try raw.field("arguments").object(required: []) }
-            catch { throw VisionFailure.invalidArgument }
+            guard case .object(let fields) = command.value, fields["arguments"] == .object([:]) else { throw VisionFailure.invalidArgument }
             guard Date() < command.deadline else { throw VisionFailure.timeout }
             guard active() else { throw VisionFailure.staleSession }
             if let failure = camera.availability { throw failure }
             guard effective else { throw VisionFailure.unavailable }
+            try Task.checkCancellation()
             let image = try await camera.captureFreshImage(deadline: command.deadline)
             captures += 1
             try Task.checkCancellation()
@@ -112,7 +114,9 @@ import OSLog
             guard image.capturedAt >= command.sentAt, Date() < command.deadline else { throw VisionFailure.timeout }
             guard image.jpeg.count <= mediaLimit else { throw VisionFailure.invalidArgument }
             let packageStart = Date()
-            let result = try VisualEvidence.package(image, body: body, sequence: Int64(captures))
+            let sequence = Int64(captures)
+            let result = try await Task.detached { try VisualEvidence.package(image, body: body, sequence: sequence) }.value
+            try Task.checkCancellation()
             guard Date() < command.deadline else { throw VisionFailure.timeout }
             if case .object(let fields) = result, case .object(let manifest) = fields["evidence"] {
                 lastEvidenceID = try manifest.field("evidence_id").string()
@@ -126,7 +130,7 @@ import OSLog
             lastError = failure.message
             reply = command.reply(error: failure)
         }
-        do { try receipts.finish(command, response: reply) }
+        do { try await receipts.finish(command, response: reply) }
         catch { reply = command.reply(error: .internalError); throw error }
         return reply
     }

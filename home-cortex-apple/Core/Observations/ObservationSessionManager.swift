@@ -31,7 +31,6 @@ import Darwin
     @ObservationIgnored private var seeds: [ObservationBox] = []
     @ObservationIgnored private var access: (@MainActor () throws -> ObservationAccess)?
     @ObservationIgnored private var heldFrame: ObservationFrame?
-    @ObservationIgnored private var lastSample: Date?
     var thermalStatus: String {
         let state: String
         switch thermalState() { case 0: state = "Nominal"; case 1: state = "Fair"; case 2: state = "Serious"; default: state = "Critical" }
@@ -47,15 +46,20 @@ import Darwin
         do {
             let disk = try store ?? ObservationQueueStore()
             self.store = disk
-            queue = try disk.load()
-            armExpiry()
-            if let queue,queue.localOnly,queue.captureStartedAt == nil,queue.uploads.isEmpty {
-                try disk.clear(); self.queue = nil; localOnly = true; expiryWorker?.cancel(); expiryWorker = nil
-                message = "Empty local experiment reset. Choose Manual diagnostic."
-            } else if let queue {
-                phase = .failed; mode = queue.mode; localOnly = queue.localOnly; sessionID = queue.sessionID; crops = queue.uploads.map(\.crop)
-                acknowledged = queue.uploads.filter(\.acknowledged).count; metrics = queue.metrics
-                message = "Recovered foreground scan. Retry upload or cancel; capture does not resume automatically."
+            guard FileManager.default.fileExists(atPath: disk.file.path) else { return }
+            storageFailed = true
+            Task {
+                do {
+                    queue = try await processor.load(store: disk); armExpiry()
+                    if let queue, queue.localOnly, queue.captureStartedAt == nil, queue.uploads.isEmpty {
+                        try await processor.clear(store: disk); self.queue = nil
+                    } else if let queue {
+                        phase = .failed; mode = queue.mode; localOnly = queue.localOnly; sessionID = queue.sessionID; crops = queue.uploads.map(\.crop)
+                        acknowledged = queue.uploads.filter(\.acknowledged).count; metrics = queue.metrics
+                        message = "Recovered foreground scan. Retry upload or cancel; capture does not resume automatically."
+                    }
+                    storageFailed = false
+                } catch { phase = .failed; message = error.localizedDescription }
             }
         } catch { storageFailed = true; phase = .failed; message = "Observation storage is unavailable. \(error.localizedDescription)" }
     }
@@ -70,21 +74,22 @@ import Darwin
             pending.localOnly = localOnly
             pending.metrics.batteryStart = Self.battery()
             pending.metrics.thermalStates = [String(thermalState())]
-            try store?.save(pending); queue = pending; armExpiry()
-            crops = []; inventory = []; regions = []; seeds = []; frame = nil; heldFrame = nil; lastSample = nil; elapsed = 0; acknowledged = 0; trackCount = 0; metrics = pending.metrics; message = "Starting observation session…"
+            queue = pending; armExpiry()
+            crops = []; inventory = []; regions = []; seeds = []; frame = nil; heldFrame = nil; elapsed = 0; acknowledged = 0; trackCount = 0; metrics = pending.metrics; message = "Starting observation session…"
             generation += 1; let token = generation
             worker = Task { [weak self] in
                 guard let self else { return }
                 do {
+                    try await persist(); try check(token)
                     if localOnly {
-                        queue?.sessionID = observationID(); sessionID = queue?.sessionID; try persist()
+                        queue?.sessionID = observationID(); sessionID = queue?.sessionID; try await persist()
                     } else { try await ensureSession(context) }
                     try check(token)
                     guard !thermalGuardEnabled || !ObservationThermalPolicy.stop(thermalState()) else { throw ObservationFailure.thermal }
                     try await camera.beginObservationAcquisition()
                     try check(token)
                     queue?.captureStartedAt = Date(); queue?.phase = .capturing
-                    try persist(); phase = .capturing; message = nil
+                    try await persist(); phase = .capturing; message = nil
                     await processor.reset(settings: settings)
                     let start = ContinuousClock.now
                     let duration = min(configuration.duration,max(0,(queue?.expiresAt.timeIntervalSinceNow ?? 0)-30))
@@ -100,10 +105,10 @@ import Darwin
                     metrics.captureSeconds = Date().timeIntervalSince(queue?.captureStartedAt ?? Date())
                     metrics.batteryEnd = Self.battery(); queue?.metrics = metrics
                     camera.endObservationAcquisition()
-                    queue?.phase = .uploading; try persist(); phase = .uploading; frame = nil; regions = []
-                    if localOnly { try completeLocal(cancelled: false) } else { try await upload(token: token) }
+                    queue?.phase = .uploading; try await persist(); phase = .uploading; frame = nil; regions = []
+                    if localOnly { try await completeLocal(cancelled: false) } else { try await upload(token: token) }
                     if token == generation { worker = nil }
-                } catch { fail(error,token: token) }
+                } catch { await fail(error,token: token) }
             }
         } catch { message = error.localizedDescription; phase = .failed }
     }
@@ -120,23 +125,24 @@ import Darwin
         message = "Manual region queued. The crop count updates on the next sample."
     }
     private func sample(context: ObservationAccess, token: Int) async throws {
+        if (heldFrame ?? frame)?.world != camera.observationWorld { heldFrame = nil; frame = nil; seeds = [] }
         var image: ObservationFrame
         if !seeds.isEmpty,let held = heldFrame ?? frame { image = held; heldFrame = nil }
         else if heldFrame != nil { return }
         else {
             do { image = try await camera.observationFrame(body: context.body) }
-            catch let error as VisionFailure where error == .busy || error == .unavailable {
-                // Existing camera commands/localization have priority. Bound consecutive missing frames.
-                if Date().timeIntervalSince(lastSample ?? queue?.captureStartedAt ?? Date()) > 5 { throw ObservationFailure.interrupted }
+            catch let error as VisionFailure where [.busy, .unavailable, .staleSession, .timeout].contains(error) {
+                // Pause sampling until recovery; the scan duration and evidence expiry remain bounded.
                 return
             }
         }
         try check(token)
         guard let id = queue?.sessionID,image.capturedAt >= (queue?.captureStartedAt ?? .distantPast).addingTimeInterval(-1),Date().timeIntervalSince(image.capturedAt) < 10 else { seeds = []; heldFrame = nil; return }
-        if !localOnly,let diagnostic = image.diagnostic, image.pose == nil,Date().timeIntervalSince(image.capturedAt) < 0.8 {
+        if !localOnly,case .object(let diagnostic) = image.diagnostic,
+           diagnostic["tracking_state"] == .string(LocalizationState.unanchored.rawValue), image.pose == nil,Date().timeIntervalSince(image.capturedAt) < 0.8 {
             do {
                 let operation = observationID()
-                let result = try await context.transport.send(path: "/sessions/\(id)/capture-poses",method: "POST",payload: .object(["operation_id": .string(operation), "diagnostic": diagnostic]),crop: nil)
+                let result = try await context.transport.send(path: "/sessions/\(id)/capture-poses",method: "POST",payload: .object(["operation_id": .string(operation), "diagnostic": .object(diagnostic)]),crop: nil)
                 let fields = try result.object(required: ["operation_id","camera_pose"])
                 guard fields["operation_id"] == .string(operation) else { throw ObservationFailure.invalidResponse }
                 let pose = try fields.field("camera_pose").object(required: ["pose_id","frame","measured_at","pose_frame"])
@@ -151,7 +157,7 @@ import Darwin
         let manual = seeds; seeds = []
         let result = try await processor.process(image,mode: mode,manual: manual)
         try check(token)
-        if heldFrame == nil { frame = image; regions = result.tracks }; trackCount = result.totalTracks; crops = result.crops; lastSample = Date()
+        if heldFrame == nil { frame = image; regions = result.tracks }; trackCount = result.totalTracks; crops = result.crops
         if metrics.captureTimes.last != image.capturedAt { metrics.samples += 1; metrics.captureTimes.append(image.capturedAt) }
         metrics.latencyMS.append(result.latencyMS)
         metrics.rawProposalCounts.append(result.rawProposalBoxes.count)
@@ -165,9 +171,10 @@ import Darwin
         let thermal = String(thermalState())
         if !metrics.thermalStates.contains(thermal) { metrics.thermalStates.append(thermal) }
         guard metrics.samples <= 120 else { throw ObservationFailure.capacity }
-        queue?.uploads = crops.map { ObservationUpload(crop: $0) }
+        let previous = queue?.uploads ?? []
+        queue?.uploads = crops.map { crop in previous.first(where: { $0.crop.id == crop.id }) ?? ObservationUpload(crop: crop) }
         queue?.metrics = metrics
-        try persist()
+        try await persist()
         if thermalGuardEnabled && ObservationThermalPolicy.stop(thermalState()) { throw ObservationFailure.thermal }
     }
     func finish() {
@@ -175,15 +182,14 @@ import Darwin
         halt()
         metrics.captureSeconds = Date().timeIntervalSince(queue?.captureStartedAt ?? Date()); metrics.batteryEnd = Self.battery()
         queue?.metrics = metrics; queue?.phase = .uploading
-        if localOnly { do { try completeLocal(cancelled: false) } catch { message = error.localizedDescription; phase = .failed } } else { startUpload() }
+        startUpload()
     }
     func retry(connection: ConnectionController) { access = { try connection.observationAccess() }; retry() }
     func retry(access: @escaping @MainActor () throws -> ObservationAccess) { self.access = access; retry() }
-    private func retry() { guard !busy,queue != nil else { return }; if localOnly { do { try completeLocal(cancelled: queue?.endState == "CANCELLED") } catch { message = error.localizedDescription } } else { startUpload() } }
+    private func retry() { startUpload() }
     func cancel(connection: ConnectionController? = nil) {
         guard canCancel else { return }
         halt()
-        if localOnly { do { try completeLocal(cancelled: true) } catch { message = error.localizedDescription }; return }
         if let connection { access = { try connection.observationAccess() } }
         let operation = queue?.endOperation ?? observationID()
         queue?.endState = "CANCELLED"; queue?.endOperation = operation
@@ -194,8 +200,12 @@ import Darwin
         halt(); phase = .failed; queue?.phase = .failed; frame = nil; regions = []; seeds = []
         metrics.captureSeconds = Date().timeIntervalSince(queue?.captureStartedAt ?? Date()); metrics.batteryEnd = Self.battery(); queue?.metrics = metrics
         queue?.lastError = ObservationFailure.interrupted.localizedDescription
-        do { try persist(); message = ObservationFailure.interrupted.localizedDescription }
-        catch { message = error.localizedDescription }
+        let token = generation
+        worker = Task {
+            do { try await persist(); try check(token); message = ObservationFailure.interrupted.localizedDescription }
+            catch { if token == generation { message = error.localizedDescription } }
+            if token == generation { worker = nil }
+        }
     }
     /// Only expired local queues can be discarded without resolving the remote terminal operation.
     func reapExpired() {
@@ -211,31 +221,38 @@ import Darwin
         }
     }
     func discardExpired() {
-        guard !busy,let queue,queue.expiresAt <= Date() else { return }
-        do { try store?.clear(); self.queue = nil; crops = []; phase = .idle; message = "Expired local evidence removed." }
-        catch { message = error.localizedDescription }
+        guard !busy,let queue,queue.expiresAt <= Date(),let store else { return }
+        worker = Task {
+            do { try await processor.clear(store: store); self.queue = nil; crops = []; phase = .idle; message = "Expired local evidence removed." }
+            catch { message = error.localizedDescription }
+            worker = nil
+        }
     }
-    private func completeLocal(cancelled: Bool) throws {
+    private func completeLocal(cancelled: Bool) async throws {
         camera.endObservationAcquisition()
         guard queue?.localOnly == true else { throw ObservationFailure.invalidResponse }
-        phase = cancelled ? .cancelled : .completed
+        let token = generation
         message = cancelled ? "Local diagnostic cancelled. No server session was created." : "Local diagnostic completed. No server session or uploads; these are diagnostic crops only."
-        try store?.clear(); queue = nil; frame = nil; regions = []; expiryWorker?.cancel(); expiryWorker = nil
+        if let store { try await processor.clear(store: store) }; try check(token); queue = nil; frame = nil; regions = []; expiryWorker?.cancel(); expiryWorker = nil
+        phase = cancelled ? .cancelled : .completed
     }
     private func halt() { camera.endObservationAcquisition(); generation += 1; worker?.cancel(); worker = nil; regions = []; frame = nil; seeds = []; heldFrame = nil }
     private func startUpload() {
-        guard queue != nil,let access,!busy else { return }
+        guard queue != nil,!busy else { return }
         generation += 1; let token = generation
         phase = .uploading; message = nil
         worker = Task { [weak self] in
             guard let self else { return }
             do {
+                try check(token)
+                if localOnly { try await completeLocal(cancelled: queue?.endState == "CANCELLED"); if token == generation { worker = nil }; return }
+                guard let access else { throw ClientFailure.authenticationRequired }
                 let context = try access()
                 guard queue?.bound(to: context) == true else { throw ClientFailure.authenticationRequired }
                 try await ensureSession(context); try check(token)
                 try await upload(token: token)
                 if token == generation { worker = nil }
-            } catch { fail(error,token: token) }
+            } catch { await fail(error,token: token) }
         }
     }
     private func ensureSession(_ context: ObservationAccess) async throws {
@@ -258,7 +275,7 @@ import Darwin
         self.queue?.sessionID = id; sessionID = id
         self.queue?.expiresAt = min(queue.expiresAt,try V1Time.parse(expiry))
         armExpiry()
-        try persist()
+        try await persist()
     }
     private func upload(token: Int) async throws {
         guard let access,let initial = queue,let id = initial.sessionID else { throw ObservationFailure.invalidResponse }
@@ -277,7 +294,7 @@ import Darwin
                           r["disposition"] == .string("accepted") || r["disposition"] == .string("duplicate") else { throw ObservationFailure.invalidResponse }
                     item.mediaAcknowledged = true; queue?.uploads[index] = item
                     metrics.uploadBytes += item.crop.jpeg.count+(try JSONEncoder().encode(payload).count)
-                    queue?.metrics = metrics; try persist()
+                    queue?.metrics = metrics; try await persist()
                 }
                 let payload = JSONValue.object(["operation_id": .string(item.batchOperation),"session_id": .string(id),"observations": .array([item.crop.wire(session: id,mode: initial.mode)])])
                 let reply = try await send(path: "/sessions/\(id)/batches",method: "POST",payload: payload,crop: nil)
@@ -289,31 +306,32 @@ import Darwin
                             // A recorded rejection is immutable; a later attempt needs a fresh batch operation.
                             item.batchOperation = observationID()
                             if detail == "crop_missing" { item.mediaAcknowledged = false; item.mediaOperation = observationID() }
-                            queue?.uploads[index] = item; try persist()
+                            queue?.uploads[index] = item; try await persist()
                         }
                         throw ObservationFailure.server(422,detail,error["retryable"] == .bool(true),2000)
                     }
                     throw ObservationFailure.invalidResponse
                 }
-                item.acknowledged = true; queue?.uploads[index] = item
+                item.acknowledged = true; item.crop.releaseMedia(); queue?.uploads[index] = item
                 acknowledged = queue?.uploads.filter(\.acknowledged).count ?? 0
-                metrics.uploadBytes += try JSONEncoder().encode(payload).count; queue?.metrics = metrics; try persist()
+                metrics.uploadBytes += try JSONEncoder().encode(payload).count; queue?.metrics = metrics; try await persist()
             }
         }
         try check(token)
-        if queue?.endOperation == nil { queue?.endOperation = observationID(); queue?.endState = "COMPLETED"; try persist() }
+        if queue?.endOperation == nil { queue?.endOperation = observationID(); queue?.endState = "COMPLETED"; try await persist() }
         guard let operation = queue?.endOperation,let target = queue?.endState else { throw ObservationFailure.invalidResponse }
         let context = try access()
         guard queue?.bound(to: context) == true else { throw ClientFailure.authenticationRequired }
         let reply = try await send(path: "/sessions/\(id)/end",method: "POST",payload: .object(["operation_id": .string(operation),"state": .string(target)]),crop: nil)
         try check(token)
         guard case .object(let r) = reply,r["operation_id"] == .string(operation),case .object(let session) = r["session"],session["session_id"] == .string(id),session["state"] == .string(target) else { throw ObservationFailure.invalidResponse }
-        queue?.sessionConfirmed = true; try persist()
+        queue?.sessionConfirmed = true; try await persist()
         if target == "COMPLETED" { try await verifyInventory(context: context,id: id,token: token) }
         try check(token)
+        if let store { try await processor.clear(store: store) }; try check(token)
+        queue = nil; expiryWorker?.cancel(); expiryWorker = nil
         phase = target == "CANCELLED" ? .cancelled : .completed
         message = target == "CANCELLED" ? "Server cancellation confirmed." : "Server completion and inventory confirmed."
-        try store?.clear(); queue = nil; expiryWorker?.cancel(); expiryWorker = nil
     }
     private func verifyInventory(context: ObservationAccess,id: String,token: Int) async throws {
         var cursor: String?, entries: [JSONValue] = [], seen = Set<String>(), cursors = Set<String>()
@@ -360,18 +378,19 @@ import Darwin
         }
         throw ObservationFailure.invalidResponse
     }
-    private func persist() throws { if let queue { guard let store else { throw ObservationFailure.storage }; try store.save(queue) } }
+    private func persist() async throws { if let queue { guard let store else { throw ObservationFailure.storage }; try await processor.persist(queue,store: store) } }
     private func check(_ token: Int) throws { try Task.checkCancellation(); guard token == generation else { throw CancellationError() } }
-    private func fail(_ error: any Error,token: Int) {
+    private func fail(_ error: any Error,token: Int) async {
         guard token == generation else { return }
         camera.endObservationAcquisition()
         let uploading = phase == .uploading
-        worker = nil; phase = .failed; frame = nil; regions = []
+        phase = .failed; frame = nil; heldFrame = nil; seeds = []; regions = []
         if uploading { metrics.uploadFailures += 1 } else { metrics.captureFailures = (metrics.captureFailures ?? 0)+1 }
         queue?.metrics = metrics; queue?.phase = .failed
         message = error.localizedDescription
         queue?.lastError = String(error.localizedDescription.prefix(400))
-        do { try persist() } catch { message = error.localizedDescription }
+        do { try await persist() } catch { if token == generation { message = error.localizedDescription } }
+        if token == generation { worker = nil }
     }
     func report() throws -> URL {
         let report = ObservationDiagnosticReport(mode: mode.rawValue,localOnly: localOnly,thermalGuardEnabled: thermalGuardEnabled,error: message,sessionID: sessionID,state: phase.rawValue,metrics: metrics,crops: crops.map { .init(id: $0.id,track: $0.trackID,bytes: $0.jpeg.count,jpeg: $0.jpeg,pose: $0.pose,localDiagnostic: $0.diagnostic) },inventory: inventory)

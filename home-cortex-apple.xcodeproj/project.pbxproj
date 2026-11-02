@@ -5,7 +5,12 @@
 	"objectVersion" = "56";
 	"archiveVersion" = "1";
 	"objects" = {
-		"966D2EB52CF2A43BC95A9834" = { "isa" = "PBXGroup"; "name" = "Object observations"; "sourceTree" = "<group>"; "children" = ("73C3360A071C738396016AC5","3795CC0C2C9D016C1856D92F","A7801A1C1EB5BBF890B362CF","957FA65358AD4AB3CC47A442","1A5169F594647D545E0B58B9","0E0CA7CC2136693752E2FC43","DCABA652776FCC563DD13495","00B6A59C27C56F11D7296B18"); };
+		"ABC001000000000000000000" = { "isa" = "PBXFileReference"; "path" = "home-cortex-appleTests/HCARProfilingTests.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"ABC002000000000000000000" = { "isa" = "PBXBuildFile"; "fileRef" = "ABC001000000000000000000"; };
+		"ABC001000000000000000001" = { "isa" = "PBXFileReference"; "path" = "home-cortex-appleTests/HCARPhysicalSmokeTests.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
+		"ABC002000000000000000001" = { "isa" = "PBXBuildFile"; "fileRef" = "ABC001000000000000000001"; };
+
+		"966D2EB52CF2A43BC95A9834" = { "isa" = "PBXGroup"; "name" = "Object observations"; "sourceTree" = "<group>"; "children" = ("73C3360A071C738396016AC5","3795CC0C2C9D016C1856D92F","A7801A1C1EB5BBF890B362CF","957FA65358AD4AB3CC47A442","1A5169F594647D545E0B58B9","0E0CA7CC2136693752E2FC43","DCABA652776FCC563DD13495","00B6A59C27C56F11D7296B18","ABC001000000000000000000","ABC001000000000000000001"); };
 		"00B6A59C27C56F11D7296B18" = { "isa" = "PBXFileReference"; "path" = "home-cortex-appleTests/ObjectObservationTests.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
 		"241F4979E20C9D557B62D2BA" = { "isa" = "PBXBuildFile"; "fileRef" = "00B6A59C27C56F11D7296B18"; };
 		"73C3360A071C738396016AC5" = { "isa" = "PBXFileReference"; "path" = "home-cortex-apple/Core/Observations/ObservationTracking.swift"; "lastKnownFileType" = "sourcecode.swift"; "sourceTree" = "SOURCE_ROOT"; };
@@ -743,6 +748,8 @@
 			"buildActionMask" = "2147483647";
 			"files" = (
 				"241F4979E20C9D557B62D2BA",
+				"ABC002000000000000000001",
+				"ABC002000000000000000000",
 				"3451146EA57D4CE78C0DE3E8",
 				"BFA58B6FC9FF44D299696EB2",
 				"D1B7841EF8C54931B95941CC",

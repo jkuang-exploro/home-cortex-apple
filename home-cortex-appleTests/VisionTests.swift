@@ -85,7 +85,7 @@ final class VisionTests: XCTestCase {
         let camera = FakeStillCamera(); let runtime = VisionRuntime(camera: camera); runtime.configured = true
         let pending = request()
         let command = try VisionCommand(pending, body: "embodiment:phone", session: "runtime-session:one")
-        _ = try VisionReceipts(identity: "client:device\nembodiment:phone", root: directory).begin(command)
+        _ = try await VisionReceipts(identity: "client:device\nembodiment:phone", root: directory).begin(command)
         let uncertain = try await runtime.fulfill(pending, body: "embodiment:phone", session: "runtime-session:one", identity: "client:device", root: directory)
         XCTAssertEqual(try code(uncertain), "INTERNAL_ERROR"); XCTAssertEqual(camera.calls, 0)
         let timeout = try await runtime.fulfill(request(expired: true), body: "embodiment:phone", session: "runtime-session:one", identity: "client:device", root: directory)
@@ -189,6 +189,126 @@ final class VisionTests: XCTestCase {
         XCTAssertThrowsError(try V1Grants.visionObserve(.array([session,vision,vision]), body: body, purpose: .device))
         XCTAssertThrowsError(try V1Grants.visionObserve(.array([session, .object(["embodiment_id": .string(body), "verb": .string("receive"), "capability": .string("vision.observe_clip")])]), body: body, purpose: .device))
     }
+    @MainActor func testPendingJPEGIsSeparateProtectedAndReplayableThenAcknowledgementRemovesIt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let camera = FakeStillCamera(), runtime = VisionRuntime(camera: FakeStillCamera())
+        let live = VisionRuntime(camera: camera); live.configured = true
+        let raw = request(), command = try VisionCommand(raw,body: "embodiment:phone",session: "runtime-session:one")
+        let response = try await live.fulfill(raw,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root)
+        let store = try VisionReceipts(identity: "client:device\nembodiment:phone",root: root)
+        let directory = store.directory
+        let receipt = directory.appendingPathComponent(command.id+".json"), jpeg = directory.appendingPathComponent(command.id+".jpg")
+        let metadata = try Data(contentsOf: receipt)
+        XCTAssertFalse(String(decoding: metadata,as: UTF8.self).contains("media_base64"))
+        XCTAssertEqual(try Data(contentsOf: jpeg),Data([0xff,0xd8,1,0xff,0xd9]))
+        XCTAssertEqual(try directory.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup,true)
+        for file in [receipt,jpeg] {
+            let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+            #if !targetEnvironment(simulator)
+            XCTAssertEqual(attributes[.protectionKey] as? FileProtectionType,.complete)
+            #endif
+            XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue,0o600)
+        }
+        runtime.configured = true
+        let replay = try await runtime.fulfill(raw,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root)
+        XCTAssertEqual(replay,response)
+        try await store.acknowledge(response); try await store.acknowledge(response)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: jpeg.path))
+        let acknowledged = try await store.isAcknowledged(response); XCTAssertTrue(acknowledged)
+        let retained = try await store.begin(command)
+        XCTAssertFalse(retained.0)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(retained.1),as: UTF8.self).contains("media_base64"))
+        XCTAssertEqual(camera.calls,1)
+    }
+    @MainActor func testEvidenceExpirationAndCapacityFailClosedWithoutRecapture() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let camera = FakeStillCamera(), live = VisionRuntime(camera: FakeStillCamera()); live.configured = true
+        let raw = request(), command = try VisionCommand(raw,body: "embodiment:phone",session: "runtime-session:one")
+        _ = try await live.fulfill(raw,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root)
+        let store = try VisionReceipts(identity: "client:device\nembodiment:phone",root: root), directory = store.directory
+        do { _ = try await store.begin(command,now: Date().addingTimeInterval(86401)); XCTFail("Expired command accepted") }
+        catch { XCTAssertEqual(error as? VisionFailure,.timeout) }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path),[])
+        let full = directory.appendingPathComponent("capacity.jpg")
+        FileManager.default.createFile(atPath: full.path,contents: nil)
+        let handle = try FileHandle(forWritingTo: full); try handle.truncate(atOffset: 64*1024*1024); try handle.close()
+        let blocked = VisionRuntime(camera: camera); blocked.configured = true
+        let result = try await blocked.fulfill(request(),body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root)
+        XCTAssertEqual(try code(result),"BUSY"); XCTAssertEqual(camera.calls,0)
+    }
+    @MainActor func testLegacyInlineEvidenceMigratesWithoutRecapture() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = request(), command = try VisionCommand(raw,body: "embodiment:phone",session: "runtime-session:one")
+        let store = try VisionReceipts(identity: "client:device\nembodiment:phone",root: root)
+        let image = CapturedImage(jpeg: Data([0xff,0xd8,0xff,0xd9]),capturedAt: Date(),cameraID: "camera:test",width: 1,height: 1,captureDuration: 0,encodingDuration: 0)
+        let response = command.reply(result: try VisualEvidence.package(image,body: "embodiment:phone",sequence: 1))
+        let file = store.directory.appendingPathComponent(command.id+".json")
+        try JSONEncoder().encode(JSONValue.object(["request": raw,"retain_until": .string(V1Time.format(Date().addingTimeInterval(60))),"response": response])).write(to: file)
+        let replay = try await store.begin(command)
+        XCTAssertEqual(replay.1,response)
+        XCTAssertFalse(String(decoding: try Data(contentsOf: file),as: UTF8.self).contains("media_base64"))
+        try await store.acknowledge(response)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.directory.path),[command.id+".json"])
+    }
+    @MainActor func testFailedCleanupCommitsReceiptAndRetriesDeletionOnRecovery() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let camera = FakeStillCamera(), live = VisionRuntime(camera: FakeStillCamera()); live.configured = true
+        let raw = request(), command = try VisionCommand(raw,body: "embodiment:phone",session: "runtime-session:one")
+        let response = try await live.fulfill(raw,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root)
+        let failing = try VisionReceipts(identity: "client:device\nembodiment:phone",root: root,remove: { _ in throw CocoaError(.fileWriteNoPermission) })
+        do { try await failing.acknowledge(response); XCTFail("Expected cleanup error") } catch { }
+        let jpeg = failing.directory.appendingPathComponent(command.id+".jpg")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: jpeg.path))
+        let committed = try await failing.isAcknowledged(response); XCTAssertTrue(committed)
+        let reopened = VisionRuntime(camera: camera); reopened.configured = true
+        let replay = try await reopened.fulfill(raw,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root)
+        XCTAssertEqual(camera.calls,0); XCTAssertFalse(FileManager.default.fileExists(atPath: jpeg.path))
+        guard case .object(let expected) = response, case .object(let actual) = replay else { return XCTFail() }
+        XCTAssertEqual(actual["message_id"],expected["message_id"])
+    }
+    @MainActor func testTransientOrConflictingAcknowledgementNeverConsumesOtherEvidence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let live = VisionRuntime(camera: FakeStillCamera()); live.configured = true
+        let raw = request(), command = try VisionCommand(raw,body: "embodiment:phone",session: "runtime-session:one")
+        let response = try await live.fulfill(raw,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root)
+        let store = try VisionReceipts(identity: "client:device\nembodiment:phone",root: root)
+        let rejected = command.reply(error: .conflict)
+        try await store.acknowledge(rejected)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store.directory.appendingPathComponent(command.id+".jpg").path))
+        let matched = try await store.isAcknowledged(rejected); XCTAssertFalse(matched)
+        let unknown = try VisionCommand(request(),body: "embodiment:phone",session: "runtime-session:one").reply(error: .busy)
+        try await store.acknowledge(unknown)
+        let absent = try await store.isAcknowledged(unknown); XCTAssertFalse(absent)
+        try await store.acknowledge(response)
+        let original = try await store.isAcknowledged(response); XCTAssertTrue(original)
+        let unrelated = try await store.isAcknowledged(rejected); XCTAssertFalse(unrelated)
+    }
+    @MainActor func testBurstRequestsBoundCaptureAndDuplicateWaiters() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let camera = FakeStillCamera(); camera.delay = true
+        let live = VisionRuntime(camera: camera); live.configured = true
+        let original = request()
+        let first = Task { try await live.fulfill(original,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root) }
+        try await Task.sleep(for: .milliseconds(20))
+        let results = try await withThrowingTaskGroup(of: JSONValue.self) { group in
+            for index in 0..<32 {
+                let raw = index < 16 ? original : request()
+                group.addTask { try await live.fulfill(raw,body: "embodiment:phone",session: "runtime-session:one",identity: "client:device",root: root) }
+            }
+            var responses: [JSONValue] = []; for try await reply in group { responses.append(reply) }; return responses
+        }
+        let response = try await first.value
+        XCTAssertEqual(camera.calls,1)
+        XCTAssertEqual(results.filter { $0 == response }.count,8)
+        XCTAssertEqual(try results.filter { $0 != response }.map(code),Array(repeating: "BUSY",count: 24))
+    }
+
 }
 
 private actor ManifestPeer: V1Transport {

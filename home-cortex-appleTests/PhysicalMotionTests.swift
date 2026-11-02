@@ -32,7 +32,7 @@ final class PhysicalMotionTests: XCTestCase {
         }
         defer { logger.cancel() }
         try await wait { phone.localization.camera.tracking.state == .unanchored }
-        let frame = try phone.localization.camera.tracking.visualFrame()
+        let frame = try await phone.localization.camera.tracking.visualFrame()
         XCTAssertEqual(frame.pixels.count,frame.stride*frame.height)
         XCTAssertGreaterThan(frame.intrinsics.fx,0)
         XCTAssertGreaterThan(frame.intrinsics.fy,0)

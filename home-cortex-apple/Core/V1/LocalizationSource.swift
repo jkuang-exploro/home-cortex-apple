@@ -6,7 +6,7 @@ import Foundation
     var cameraPose: RigidTransform? { get }
     var state: LocalizationState { get }
     @discardableResult func poll() -> Bool
-    func visualFrame() throws -> VisualFrame
+    func visualFrame() async throws -> VisualFrame
     func diagnostic(body: String) -> JSONValue?
 }
 

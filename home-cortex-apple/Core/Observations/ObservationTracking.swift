@@ -83,6 +83,8 @@ struct ObservationSelector: Sendable {
 /// Twenty percent mean RGB histogram-mass change is conservatively treated as uncertain.
 struct ObservationAppearance: Sendable {
     let histogram: [Double]
+    let fingerprint: UInt64
+    let sharpness: Double
     init?(image: CGImage) {
         var pixels = [UInt8](repeating: 0,count: 32*32*4)
         let rendered = pixels.withUnsafeMutableBytes { bytes -> Bool in
@@ -94,6 +96,16 @@ struct ObservationAppearance: Sendable {
         var bins = [Double](repeating: 0,count: 24)
         for index in 0..<1024 { for channel in 0..<3 { bins[channel*8+Int(pixels[index*4+channel])/32] += 1.0/1024 } }
         histogram = bins
+        let luminance = (0..<1024).map { index in (77*Double(pixels[index*4])+150*Double(pixels[index*4+1])+29*Double(pixels[index*4+2]))/256 }
+        var hash: UInt64 = 0, edge = 0.0
+        for y in 0..<8 { for x in 0..<8 {
+            if luminance[y*128+x*4] > luminance[y*128+min(31,x*4+3)] { hash |= UInt64(1) << (y*8+x) }
+        } }
+        for y in 1..<31 { for x in 1..<31 {
+            let i = y*32+x
+            edge += abs(luminance[i]*4-luminance[i-1]-luminance[i+1]-luminance[i-32]-luminance[i+32])
+        } }
+        fingerprint = hash; sharpness = edge/900
     }
     func distance(to other: Self) -> Double { zip(histogram,other.histogram).reduce(0) { $0+abs($1.0-$1.1) } / 6 }
     func compatible(with other: Self) -> Bool { distance(to: other) <= 0.2 }

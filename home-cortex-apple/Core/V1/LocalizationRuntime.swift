@@ -115,7 +115,7 @@ import Observation
     private func detect(session: String, token: Int, active: @MainActor (String) -> Bool) async {
         let scanGeneration = visualCalibration.generation
         do {
-            let frame = try source.localTracking.visualFrame()
+            let frame = try await source.localTracking.visualFrame()
             let solution = try await anchorDetector.solve(frame: frame, tags: visualCalibration.tags)
             guard token == generation, !Task.isCancelled, configured, active(session), context?.session == session,
                   scanGeneration == visualCalibration.generation, source.localTracking.worldID == frame.worldID,

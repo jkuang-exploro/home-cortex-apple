@@ -24,6 +24,9 @@ actor ObservationProcessor {
     private var requests: [String: VNTrackObjectRequest] = [:]
     private var handler = VNSequenceRequestHandler()
     private var world: String?
+    func load(store: ObservationQueueStore) throws -> ObservationQueue? { try store.load() }
+    func clear(store: ObservationQueueStore) throws { try store.clear(); reset(settings: ObservationSettings()) }
+    func persist(_ queue: ObservationQueue, store: ObservationQueueStore) throws { try store.save(queue) }
     func reset(settings: ObservationSettings) {
         tracker.reset(); tracker.maxTracks = settings.maxTracks
         selector = ObservationSelector(perTrack: settings.cropsPerTrack,maxBytes: settings.maxBytes,maxCrops: settings.maxCrops)
@@ -38,6 +41,7 @@ actor ObservationProcessor {
         var predictions: [String: ObservationBox] = [:]
         var rejectedAssociations = 0
         for (id,request) in requests {
+            try Task.checkCancellation()
             request.trackingLevel = .fast
             do {
                 try handler.perform([request],on: frame.image)
@@ -64,6 +68,7 @@ actor ObservationProcessor {
         let proposalMS = Self.milliseconds(proposalStarted.duration(to: .now))
         let matches = tracker.update(proposals,at: frame.capturedAt,world: frame.world,predictions: predictions)
         for (track,proposal) in matches {
+            try Task.checkCancellation()
             requests[track.id] = VNTrackObjectRequest(detectedObjectObservation: VNDetectedObjectObservation(boundingBox: proposal.box.visionRect))
             if let crop = try crop(frame,track: track,proposal: proposal) { selector.offer(crop) }
         }
@@ -110,7 +115,8 @@ actor ObservationProcessor {
         guard pixels.width*pixels.height < Double(source.width*source.height)*0.85,
               pixels.width >= 20,pixels.height >= 20,let image = source.cropping(to: pixels) else { return nil }
         let box = ObservationBox(x: pixels.minX/Double(source.width),y: pixels.minY/Double(source.height),width: pixels.width/Double(source.width),height: pixels.height/Double(source.height))
-        let (fingerprint,sharpness) = Self.descriptor(image)
+        guard let appearance = proposal.appearance else { return nil }
+        let fingerprint = appearance.fingerprint, sharpness = appearance.sharpness
         let touchesEdge = pixels.minX == 0 || pixels.minY == 0 || pixels.maxX == Double(source.width) || pixels.maxY == Double(source.height)
         let quality = min(1,sharpness/25) * (touchesEdge ? 0.6 : 1) * (0.5+0.5*proposal.visibility)
         let data = NSMutableData()
@@ -120,24 +126,7 @@ actor ObservationProcessor {
         var result = ObservationCrop(id: observationID(),trackID: track.id,jpeg: data as Data,width: image.width,height: image.height,
             sourceWidth: source.width,sourceHeight: source.height,box: box,capturedAt: frame.capturedAt,sequence: sequence,
             quality: quality,fingerprint: fingerprint,diagnostic: frame.diagnostic,objectness: proposal.objectness)
-        result.pose = frame.pose; result.cameraID = frame.cameraID
+        result.pose = frame.pose; result.cameraID = frame.cameraID; result.mediaRef = result.ref
         return result
-    }
-    private static func descriptor(_ image: CGImage) -> (UInt64,Double) {
-        var values = [UInt8](repeating: 0,count: 32*32)
-        let ok = values.withUnsafeMutableBytes { bytes -> Bool in
-            guard let ctx = CGContext(data: bytes.baseAddress,width: 32,height: 32,bitsPerComponent: 8,bytesPerRow: 32,space: CGColorSpaceCreateDeviceGray(),bitmapInfo: 0) else { return false }
-            ctx.interpolationQuality = .medium; ctx.draw(image,in: CGRect(x: 0,y: 0,width: 32,height: 32)); return true
-        }
-        guard ok else { return (0,0) }
-        var hash: UInt64 = 0, edge = 0.0
-        for y in 0..<8 { for x in 0..<8 {
-            if values[(y*4)*32+x*4] > values[(y*4)*32+min(31,x*4+3)] { hash |= UInt64(1) << (y*8+x) }
-        } }
-        for y in 1..<31 { for x in 1..<31 {
-            let i = y*32+x
-            edge += abs(Double(values[i])*4-Double(values[i-1])-Double(values[i+1])-Double(values[i-32])-Double(values[i+32]))
-        } }
-        return (hash,edge/900)
     }
 }

@@ -52,7 +52,7 @@ struct ObservationMetrics: Codable, Sendable {
 }
 /// One session on disk, ≤8 MiB crops / 16 MiB encoded queue, excluded from backup.
 /// No full frames, keys, certificates or auth-session IDs are persisted here.
-struct ObservationQueueStore {
+struct ObservationQueueStore: Sendable {
     let directory: URL
     init(directory: URL? = nil) throws {
         self.directory = try directory ?? FileManager.default.url(for: .applicationSupportDirectory,in: .userDomainMask,appropriateFor: nil,create: true).appendingPathComponent("ObjectObservations",isDirectory: true)
@@ -66,9 +66,10 @@ struct ObservationQueueStore {
         guard FileManager.default.fileExists(atPath: file.path) else { return nil }
         let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size <= 16*1024*1024 else { throw ObservationFailure.capacity }
-        let queue = try JSONDecoder().decode(ObservationQueue.self,from: Data(contentsOf: file))
+        var queue = try JSONDecoder().decode(ObservationQueue.self,from: Data(contentsOf: file))
         guard queue.bytes <= 8*1024*1024,queue.uploads.count <= 48 else { throw ObservationFailure.capacity }
         if queue.expiresAt <= now { try clear(); return nil }
+        for index in queue.uploads.indices where queue.uploads[index].crop.mediaRef == nil { queue.uploads[index].crop.mediaRef = queue.uploads[index].crop.ref }
         return queue
     }
     func save(_ queue: ObservationQueue) throws {
